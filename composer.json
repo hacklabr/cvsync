@@ -1,0 +1,21 @@
+{
+    "name": "hacklab/cvsync",
+    "description": "Bidirectional sync between Gutenberg content in the database and versioned files in the git repository (spec: cvsync v1 + Appendix A).",
+    "type": "wordpress-plugin",
+    "license": "GPL-2.0-or-later",
+    "require": {
+        "php": ">=8.3",
+        "symfony/yaml": "^7.0"
+    },
+    "require-dev": {},
+    "autoload": {
+        "psr-4": {
+            "CVSync\\": "includes/"
+        },
+        "classmap": ["includes/"]
+    },
+    "config": {
+        "optimize-autoloader": true,
+        "sort-packages": true
+    }
+}
