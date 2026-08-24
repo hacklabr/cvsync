@@ -117,7 +117,7 @@ final class BrandingAdapter implements EntityAdapter
         return $this->exists($ref) ? $ref : null;
     }
 
-    public function ensureUuid(int $dbId): string
+    public function ensureUuid(int $dbId, ?string $uuid = null): string
     {
         return ''; // sem portador de meta — identidade pela entity_key
     }

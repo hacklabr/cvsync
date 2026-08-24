@@ -133,11 +133,21 @@ final class MenuAdapter implements EntityAdapter
             : null;
     }
 
-    public function ensureUuid(int $dbId): string
+    /**
+     * Term-meta variant of ensureUuid: existing meta wins (slug re-adoption
+     * keeps the db identity); else the DOCUMENT uuid is adopted when provided
+     * (import path); else mint local.
+     */
+    public function ensureUuid(int $dbId, ?string $uuid = null): string
     {
         $existing = get_term_meta($dbId, '_cvsync_uuid', true);
         if (is_string($existing) && $existing !== '') {
             return $existing;
+        }
+
+        if (is_string($uuid) && $uuid !== '' && wp_is_uuid($uuid)) {
+            update_term_meta($dbId, '_cvsync_uuid', $uuid);
+            return $uuid;
         }
 
         $uuid = wp_generate_uuid4();
@@ -268,7 +278,8 @@ final class MenuAdapter implements EntityAdapter
 
         $this->applyLocations($menuId, array_map('strval', (array) ($data['locations'] ?? [])));
 
-        $this->ensureUuid($menuId);
+        // Import: the menu term adopts the DOCUMENT uuid (identity churn fix).
+        $this->ensureUuid($menuId, $doc->uuid());
 
         return new ApplyResult($menuId, [], $pendencies, []);
     }

@@ -126,11 +126,23 @@ abstract class AbstractPostAdapter implements EntityAdapter
         return EntityRef::post($this->postType(), $this->ensureUuid($postId));
     }
 
-    public function ensureUuid(int $dbId): string
+    /**
+     * Meta existente prevalece (reassociação por slug mantém a identidade do
+     * banco); sem meta e com $uuid do documento ⇒ adota-o (import path — o
+     * export seguinte não pode mintar outro); sem ambos ⇒ mint local.
+     */
+    public function ensureUuid(int $dbId, ?string $uuid = null): string
     {
         $existing = get_post_meta($dbId, '_cvsync_uuid', true);
         if (is_string($existing) && $existing !== '') {
             return $existing;
+        }
+
+        // Import path: freshly applied post adopts the DOCUMENT uuid (identity
+        // churn fix — files must not change uuid on the next export).
+        if (is_string($uuid) && $uuid !== '' && wp_is_uuid($uuid)) {
+            update_post_meta($dbId, '_cvsync_uuid', $uuid);
+            return $uuid;
         }
 
         $uuid = wp_generate_uuid4();
@@ -328,7 +340,8 @@ abstract class AbstractPostAdapter implements EntityAdapter
 
         $this->applyTerms($postId, $doc->terms());
         $pendingMeta = $this->applyMeta($postId, $doc);
-        $this->ensureUuid($postId);
+        // Import: the new/updated post adopts the DOCUMENT uuid (§6.3 identity).
+        $this->ensureUuid($postId, $doc->uuid());
         $this->afterApply($postId, $doc);
 
         return new ApplyResult($postId, [], $decoded->unresolvedNonStructural, $pendingMeta);

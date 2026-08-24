@@ -426,7 +426,8 @@ final class AttachmentAdapter extends AbstractPostAdapter
 
             update_post_meta($attachmentId, '_wp_attached_file', $outcome->uploadsRelPath);
             update_post_meta($attachmentId, '_wp_attachment_image_alt', $sidecar->alt);
-            $this->ensureUuid($attachmentId);
+            // Import: the attachment adopts the SIDECAR uuid (identity churn fix).
+            $this->ensureUuid($attachmentId, $sidecar->uuid);
 
             // bin_mtime = filemtime do arquivo MATERIALIZADO (não time() — 🔵 R5
             // do r9: com time() o pré-filtro errava um re-hash após cada import).

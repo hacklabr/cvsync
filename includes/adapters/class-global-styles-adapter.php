@@ -173,7 +173,8 @@ final class GlobalStylesAdapter extends AbstractPostAdapter
         }
 
         $this->applyTerms((int) $postId, $doc->terms());
-        $this->ensureUuid((int) $postId);
+        // Import: adopts the DOCUMENT uuid (identity churn fix).
+        $this->ensureUuid((int) $postId, $doc->uuid());
 
         return new ApplyResult((int) $postId, [], $decoded->unresolvedNonStructural, []);
     }

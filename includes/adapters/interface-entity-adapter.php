@@ -102,8 +102,12 @@ interface EntityAdapter
      * Gera/persiste o UUID v4 (meta '_cvsync_uuid' — meta interno, excluído
      * dos hooks de dirty e da whitelist, §5.4). Entidades auto-draft NUNCA
      * recebem UUID (§3.2).
+     *
+     * $uuid (import path): o uuid do DOCUMENTO — uma entidade recém-aplicada
+     * adota a identidade do arquivo (o export seguinte não deve mintar outro).
+     * Null/'' ⇒ mint local (BC: hooks, export, bootstrap de legado).
      */
-    public function ensureUuid(int $dbId): string;
+    public function ensureUuid(int $dbId, ?string $uuid = null): string;
 
     // ------------------------------------------------------------------
     // Leitura canônica (banco → forma do arquivo)
