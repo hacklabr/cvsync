@@ -14,10 +14,13 @@ namespace CVSync\Engine\Placeholders;
  */
 final class PlaceholderVocabulary
 {
-    /** {{ref:slug}} — STRUCTURAL (wp:block / wp:navigation refs): unresolved blocks import. */
+    /** {{ref:slug}} — STRUCTURAL refs: wp:block / wp:navigation "ref" AND
+     *  non-media "id"/"ids" targets (e.g. wp:navigation-link pointing at a
+     *  page/post). Unresolved blocks import. */
     public const REF = 'ref';
 
-    /** {{attachment:slug}} — non-structural (media id attributes: "id", "ids"). */
+    /** {{attachment:slug}} — media only: "id"/"ids" whose target post_type is
+     *  'attachment' (and attachment URLs, see ATTACHMENT_URL). */
     public const ATTACHMENT = 'attachment';
 
     /** {{attachment_url:slug}} — §A.6: attachment URL (attribute + inner HTML). */

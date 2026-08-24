@@ -101,6 +101,7 @@ final class GlobalStylesAdapter extends AbstractPostAdapter
             home_url(),
             (string) (wp_upload_dir()['baseurl'] ?? ''),
             $this->resolver->termIdAttributes(),
+            $this->resolver->isMediaId(),
         );
 
         $frontmatter = [

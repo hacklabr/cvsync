@@ -16,6 +16,10 @@ namespace CVSync\Engine\Placeholders;
  *                 export-side; class ∈ ref|attachment|term|attachment_url;
  *                 value is the numeric id (or the plain URL for attachment_url);
  *                 returns the slug or null (→ {{missing:ID}} / warning).
+ *   $isMediaId:   fn(int $id): bool — export-side classifier for "id"/"ids"
+ *                 attributes: true ⇒ {{attachment:slug}}, false ⇒ {{ref:slug}}
+ *                 (the target's post_type decides; injected by P3, which knows
+ *                 the database). Null ⇒ legacy all-media classification.
  *   $resolveSlug: fn(string $class, ?string $taxonomy, string $slug): int|string|null
  *                 import-side; returns the local id (int) for ref/attachment/term,
  *                 the local URL (string) for attachment_url, or null → pendency.
@@ -47,6 +51,9 @@ final class PlaceholderCodec
      *        (e.g. 'https://site/wp-content/uploads'); enables attachment_url.
      * @param array<string,string> $termIdAttributes Extra scalar term-id attributes
      *        (attribute => taxonomy) — P3 injects the filtered list.
+     * @param callable|null $isMediaId     See class docblock: fn(int): bool.
+     *        Classifies "id"/"ids" targets — media ⇒ {{attachment:}}, any other
+     *        post_type ⇒ {{ref:}}. Null ⇒ legacy all-media classification.
      */
     public static function encode(
         string $content,
@@ -54,6 +61,7 @@ final class PlaceholderCodec
         ?string $homeUrl = null,
         ?string $uploadsBaseUrl = null,
         array $termIdAttributes = PlaceholderVocabulary::DEFAULT_TERM_ATTRIBUTES,
+        ?callable $isMediaId = null,
     ): EncodeResult {
         $missing = [];
         $warnings = [];
@@ -61,8 +69,8 @@ final class PlaceholderCodec
         // 1. Numeric ids inside block attribute JSON.
         $content = self::mapBlockComments(
             $content,
-            static function (string $comment) use ($resolveId, $termIdAttributes, &$missing, &$warnings): string {
-                return self::encodeAttributes($comment, $resolveId, $termIdAttributes, $missing, $warnings);
+            static function (string $comment) use ($resolveId, $termIdAttributes, $isMediaId, &$missing, &$warnings): string {
+                return self::encodeAttributes($comment, $resolveId, $termIdAttributes, $isMediaId, $missing, $warnings);
             },
         );
 
@@ -227,6 +235,7 @@ final class PlaceholderCodec
     /**
      * @param callable              $resolveId
      * @param array<string,string>  $termIdAttributes
+     * @param callable|null         $isMediaId fn(int): bool — "id"/"ids" classifier.
      * @param list<PlaceholderToken> $missing
      * @param list<string>          $warnings
      */
@@ -234,6 +243,7 @@ final class PlaceholderCodec
         string $comment,
         callable $resolveId,
         array $termIdAttributes,
+        ?callable $isMediaId,
         array &$missing,
         array &$warnings,
     ): string {
@@ -305,23 +315,30 @@ final class PlaceholderCodec
             $json,
         );
 
-        // Media ids (scalar and arrays).
+        // Id-classifier for "id"/"ids" attributes: media target ⇒ attachment,
+        // any other post_type ⇒ structural ref. Null (not injected) keeps the
+        // legacy all-media classification.
+        $idClass = static fn (int $id): string => $isMediaId !== null && !$isMediaId($id)
+            ? PlaceholderVocabulary::REF
+            : PlaceholderVocabulary::ATTACHMENT;
+
+        // Id attributes (scalar and arrays) — class per target post_type.
         $json = (string) preg_replace_callback(
             '/"(id)"\s*:\s*(\d+)/',
             static fn (array $m): string => '"id":'
-                . $resolve(PlaceholderVocabulary::ATTACHMENT, null, (int) $m[2]),
+                . $resolve($idClass((int) $m[2]), null, (int) $m[2]),
             $json,
         );
         $json = (string) preg_replace_callback(
             '/"(ids)"\s*:\s*\[([\d,\s]*)\]/',
-            static function (array $m) use ($resolve): string {
+            static function (array $m) use ($resolve, $idClass): string {
                 $ids = array_filter(
                     array_map('trim', explode(',', $m[2])),
                     static fn (string $v): bool => $v !== '',
                 );
                 $tokens = array_map(
                     static fn (string $id): string => $resolve(
-                        PlaceholderVocabulary::ATTACHMENT,
+                        $idClass((int) $id),
                         null,
                         (int) $id,
                     ),
@@ -426,8 +443,8 @@ final class PlaceholderCodec
             return $original; // literal stays (inert)
         };
 
-        // Scalar tokens: "ref":"{{ref:slug}}", "id":"{{attachment:slug}}",
-        // "<attr>":"{{term:tax:slug}}".
+        // Scalar tokens: "ref":"{{ref:slug}}", "id":"{{ref|attachment:slug}}"
+        // (class per target post_type — see encode), "<attr>":"{{term:tax:slug}}".
         $json = (string) preg_replace_callback(
             '/"(ref|id)"\s*:\s*"\{\{(ref|attachment):([^}]*)\}\}"/',
             static fn (array $m): string => '"' . $m[1] . '":'
@@ -442,12 +459,14 @@ final class PlaceholderCodec
         );
 
         // Array tokens: "ids":["{{attachment:a}}",…] and taxQuery-style
-        // "<tax>":["{{term:tax:x}}",…]. Only touched when tokens are present.
+        // "<tax>":["{{term:tax:x}}",…]. attachment|ref accepted for ids arrays
+        // (classification is per target post_type — see encode); only touched
+        // when tokens are present.
         $json = (string) preg_replace_callback(
             '/"(ids|[a-zA-Z0-9_-]+)"\s*:\s*\[([^\]]*\{\{[^\]]*)\]/',
             static function (array $m) use ($resolve): string {
                 $inner = (string) preg_replace_callback(
-                    '/"\{\{(attachment|term):([^}]*)\}\}"/',
+                    '/"\{\{(attachment|term|ref):([^}]*)\}\}"/',
                     static function (array $mm) use ($resolve): string {
                         if ($mm[1] === PlaceholderVocabulary::TERM) {
                             $parts = explode(':', $mm[2], 2);
@@ -458,7 +477,7 @@ final class PlaceholderCodec
                                 $mm[0],
                             );
                         }
-                        return $resolve(PlaceholderVocabulary::ATTACHMENT, null, $mm[2], $mm[0]);
+                        return $resolve($mm[1], null, $mm[2], $mm[0]);
                     },
                     $m[2],
                 );

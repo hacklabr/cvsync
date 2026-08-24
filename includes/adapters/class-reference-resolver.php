@@ -8,6 +8,9 @@
  *
  *   export ($resolveId):   fn(string $class, ?string $taxonomy, int|string $value): ?string
  *   import ($resolveSlug): fn(string $class, ?string $taxonomy, string $slug): int|string|null
+ *   classify ($isMediaId): fn(int $postId): bool — injetado no encode para
+ *                          classificar "id"/"ids" pelo post_type do alvo
+ *                          (attachment ⇒ {{attachment:}}, demais ⇒ {{ref:}}).
  *
  * class ∈ ref | attachment | term | attachment_url (PlaceholderVocabulary).
  * Resolução por SLUG (estável cross-ambiente), nunca por ID de origem (§6).
@@ -25,8 +28,15 @@ defined('ABSPATH') || exit;
 
 final class ReferenceResolver
 {
-    /** Post types cujos posts são alvos de refs estruturais (wp:block/wp:navigation). */
-    private const REF_POST_TYPES = ['wp_block', 'wp_navigation'];
+    /**
+     * Post types alvo de refs estruturais (wp:block/wp:navigation "ref") E de
+     * ids classificados como {{ref:}} no export (wp:navigation-link "id"
+     * apontando para páginas/posts — classificação por post_type do alvo).
+     */
+    private const REF_POST_TYPES = ['wp_block', 'wp_navigation', 'page', 'post'];
+
+    /** @var array<int, string|false> Cache ID → post_type. */
+    private array $postTypeByPostId = [];
 
     /** @var array<int, string|false> Cache ID → slug. */
     private array $slugByPostId = [];
@@ -61,6 +71,17 @@ final class ReferenceResolver
                 default => null,
             };
         };
+    }
+
+    /**
+     * Classificador injetado no PlaceholderCodec::encode() (export): o alvo de
+     * um "id"/"ids" é mídia? attachment ⇒ {{attachment:}}; qualquer outro
+     * post_type ⇒ {{ref:}}. Sem fallback — o braço ATTACHMENT do import
+     * continua consultando APENAS 'attachment' (filosofia do plugin).
+     */
+    public function isMediaId(): callable
+    {
+        return fn(int $postId): bool => $this->postTypeById($postId) === 'attachment';
     }
 
     /**
@@ -125,6 +146,7 @@ final class ReferenceResolver
      */
     public function flushCaches(): void
     {
+        $this->postTypeByPostId = [];
         $this->slugByPostId = [];
         $this->postIdBySlug = [];
         $this->termIdBySlug = [];
@@ -133,6 +155,16 @@ final class ReferenceResolver
     // ------------------------------------------------------------------
     // Export (ID → slug)
     // ------------------------------------------------------------------
+
+    private function postTypeById(int $postId): ?string
+    {
+        if (!array_key_exists($postId, $this->postTypeByPostId)) {
+            $post = get_post($postId);
+            $this->postTypeByPostId[$postId] = $post instanceof \WP_Post ? $post->post_type : false;
+        }
+
+        return $this->postTypeByPostId[$postId] !== false ? $this->postTypeByPostId[$postId] : null;
+    }
 
     private function postSlugById(int $postId): ?string
     {

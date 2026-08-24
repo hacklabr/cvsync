@@ -168,6 +168,7 @@ abstract class AbstractPostAdapter implements EntityAdapter
             home_url(),
             (string) (wp_upload_dir()['baseurl'] ?? ''),
             $this->resolver->termIdAttributes(),
+            $this->resolver->isMediaId(),
         );
 
         $frontmatter = [
