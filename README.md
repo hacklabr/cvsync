@@ -18,7 +18,8 @@ ambientes (spec: cvsync v1 + Apêndice A).
   preservação do lado perdedor, snapshot pré-apply e audit log.
 - **Entidades versionadas:** páginas, padrões (`wp_block`), templates e
   template parts, navegações (`wp_navigation`), menus, global styles,
-  branding (logo/ícone do site) e anexos de mídia (sidecar + blob).
+  branding (logo/ícone do site), anexos de mídia (sidecar + blob) e —
+  opcional, desligado por default — termos de taxonomia (Apêndice B).
 - **Ambientes:** matriz normativa por ambiente (local/staging/homolog/prod) —
   em produção, apply e export automáticos ficam OFF (apply manual exige
   `--force` + TTY + `CVSYNC_ALLOW_PROD_APPLY`).
@@ -74,6 +75,50 @@ São duas superfícies de configuração com papéis distintos (§A.13.10):
 
 O apply loga warning quando a config do lint e as constantes divergirem.
 Mantenha as duas em sincronia (mesmos limites de tamanho/MIME).
+
+## Termos de taxonomia (Apêndice B)
+
+Versionamento **opcional** da definição editorial de termos (name, slug,
+description, parent por slug e meta da whitelist). **Desligado por default**:
+nada é versionado até o projeto optar via filtro `cvsync/taxonomies` (B.1.1):
+
+```php
+add_filter('cvsync/taxonomies', fn () => [
+    'category'    => ['dir' => 'categories'],
+    'projeto_tag' => [], // item com valor simples: defaults derivados
+]);
+```
+
+- Item com valor simples → defaults: diretório `{taxonomy}s` e whitelist de
+  meta `['thumbnail_id']`; item associativo sobrescreve (`dir`, `meta`).
+- **Deny-list** (erro claro na ativação): `nav_menu`, `wp_theme`,
+  `wp_pattern_category`, `wp_template_part_area`, `link_category`,
+  `post_format` e taxonomias não-públicas.
+- Um arquivo por termo, layout plano (hierarquia é campo, não path):
+  `content/terms/{dir}/{slug}.term.yml`:
+
+```yaml
+# content/terms/categories/noticias.term.yml
+uuid: 018f4b2e-7c3a-7d4e-9a1f-5e7c9b2d1e44  # identidade (termmeta _cvsync_uuid) — NUNCA no hash
+taxonomy: category                            # hash: entra
+slug: noticias                                # hash: entra
+name: "Notícias"                              # hash: entra
+description: "Conteúdo jornalístico"          # hash: entra
+parent: null                                  # hash: entra — SLUG do pai, nunca term_id
+meta:
+  thumbnail_id: "{{attachment:logo}}"         # placeholderizado (§A.6)
+hash: sha256:9f2c71ab…                        # derivado — última linha
+```
+
+- A **associação** post↔termo continua no frontmatter do post (ortogonal à
+  **definição** do termo — B.6.1); terms são aplicados no estágio 0, antes
+  dos posts.
+- Export bulk: `wp sync export --taxonomy=<tax>` (sem flag = todas as
+  taxonomias versionadas).
+- Erratas à spec v1: **E2-bis** (updates de count e
+  `edited_term_taxonomies` ficam fora do dirty-marking — import não suja a
+  fila) e **E5-bis** (delete de termo não tem trash — a rede de segurança é
+  git + conflicts + tombstone + dirty-mark reverso).
 
 ## Regras de ouro
 
@@ -174,6 +219,7 @@ cliente de volta ao repo.
 | Flag | Descrição | Default |
 |---|---|---|
 | `--post-type=<type>` | Restringe a um post type (inclui `attachment`, `nav_menu`, `wp_global_styles`, `branding`) | todos |
+| `--taxonomy=<tax>` | Restringe a uma taxonomia versionada (Apêndice B) | todas as versionadas |
 | `--scope=referenced\|all` | Escopo de attachments: só referenciados ou biblioteca inteira | `referenced` |
 | `--batch=<n>` | Tamanho do lote (chunking retomável por idempotência) | `50` |
 | `--out=<dir>` | Destino alternativo (ex.: captura de prod em dir temporário — não toca o FS do deploy) | content dir real |
