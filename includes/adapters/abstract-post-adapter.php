@@ -338,13 +338,13 @@ abstract class AbstractPostAdapter implements EntityAdapter
         }
         $postId = (int) $postId;
 
-        $this->applyTerms($postId, $doc->terms());
+        $pendingTermRefs = $this->applyTerms($postId, $doc->terms()); // B.6.3
         $pendingMeta = $this->applyMeta($postId, $doc);
         // Import: the new/updated post adopts the DOCUMENT uuid (§6.3 identity).
         $this->ensureUuid($postId, $doc->uuid());
         $this->afterApply($postId, $doc);
 
-        return new ApplyResult($postId, [], $decoded->unresolvedNonStructural, $pendingMeta);
+        return new ApplyResult($postId, [], $decoded->unresolvedNonStructural, $pendingMeta, $pendingTermRefs);
     }
 
     public function delete(EntityRef $ref, bool $force = false): void
@@ -496,16 +496,58 @@ abstract class AbstractPostAdapter implements EntityAdapter
     }
 
     /**
-     * Aplica termos identitários (slugs; cria termos ausentes via API pública).
+     * Aplica termos identitários (slugs) com o split do Apêndice B.6.3:
+     *  - taxonomia NÃO-versionada: stub auto-criado pelo wp_set_object_terms (v1 inalterado);
+     *  - taxonomia VERSIONADA + termo ausente no destino: OMITIDO do set +
+     *    pendência qualificada '{taxonomy}:{slug}' (não-estrutural — a entidade
+     *    deve chegar por si, no estágio 0; reprocessada quando o termo chegar).
      *
      * @param array<string,list<string>> $terms
+     * @return list<string> Pendências term_refs[] qualificadas (B.6.3).
      */
-    protected function applyTerms(int $postId, array $terms): void
+    protected function applyTerms(int $postId, array $terms): array
     {
+        $pendingTermRefs = [];
+        $versioned = $this->versionedTaxonomies();
+
         foreach ($this->identityTaxonomies() as $taxonomy) {
             $slugs = $terms[$taxonomy] ?? [];
-            wp_set_object_terms($postId, array_values(array_map('strval', $slugs)), $taxonomy, false);
+            $applicable = [];
+
+            foreach ($slugs as $slug) {
+                $slug = (string) $slug;
+                if (in_array($taxonomy, $versioned, true) && term_exists($slug, $taxonomy) === null) {
+                    $pendingTermRefs[] = $taxonomy . ':' . $slug; // B.6.3: omitir + term_refs[]
+                    continue;
+                }
+                $applicable[] = $slug;
+            }
+
+            wp_set_object_terms($postId, $applicable, $taxonomy, false);
         }
+
+        return $pendingTermRefs;
+    }
+
+    /**
+     * Taxonomias versionadas (fonte: o MESMO filtro cvsync/taxonomies que o
+     * registry lê — B.1.1; cache estático por request).
+     *
+     * @return list<string>
+     */
+    protected function versionedTaxonomies(): array
+    {
+        static $cache = null;
+        if ($cache !== null) {
+            return $cache;
+        }
+        $extra = apply_filters('cvsync/taxonomies', []);
+        $cache = [];
+        foreach ((array) $extra as $key => $value) {
+            $cache[] = is_int($key) ? (string) $value : (string) $key;
+        }
+
+        return $cache;
     }
 
     /**

@@ -42,6 +42,9 @@ final class Hooks
     /** Meta interno excluído dos hooks de dirty (§5.4). */
     private const EXCLUDED_META = ['_edit_last', '_edit_lock'];
 
+    /** @var array<int,array{uuid:string,key:string}> stash uuid/key entre pre_delete_term e delete_term (B.2.4). */
+    private array $pendingTermDeletes = [];
+
     public function __construct(
         private readonly AdapterRegistry $adapters,
         private readonly StateStore $state,
@@ -72,6 +75,17 @@ final class Hooks
 
         // Termos: nav_menu (itens) + taxonomias identitárias (§4.2.5).
         add_action('set_object_terms', [$this, 'onSetObjectTerms'], 10, 6);
+
+        // Apêndice B.2.4 — termos versionados (taxonomias via cvsync/taxonomies).
+        add_action('created_term', [$this, 'onTermChanged'], 10, 3);
+        add_action('edited_term', [$this, 'onTermChanged'], 10, 3);
+        add_action('pre_delete_term', [$this, 'onPreDeleteTerm'], 10, 2);
+        add_action('delete_term', [$this, 'onDeleteTerm'], 10, 4);
+        add_action('added_term_meta', [$this, 'onTermMetaChanged'], 10, 3);
+        add_action('updated_term_meta', [$this, 'onTermMetaChanged'], 10, 3);
+        add_action('deleted_term_meta', [$this, 'onTermMetaChanged'], 10, 3);
+        // E2-bis: 'edited_term_taxonomies' NUNCA é registrado (cache de
+        // descendentes); updates de count não disparam edited_term (SQL direto).
 
         // Branding: custom_logo em theme_mods; site_icon em option (§A.6).
         add_action('update_option_theme_mods_' . get_stylesheet(), [$this, 'onThemeModsUpdated'], 10, 2);
@@ -219,6 +233,114 @@ final class Hooks
         }
     }
 
+    // ------------------------------------------------------------------
+    // Apêndice B.2.4 — termos versionados
+    // ------------------------------------------------------------------
+
+    /** created_term/edited_term → dirty_db (guards: ImportGuard OBRIGATÓRIO — o apply de posts auto-cria termos via wp_set_object_terms; taxonomy ∈ versionadas). Rename admin → rekey da linha (B.2.3). */
+    public function onTermChanged(int $termId, int $ttId, string $taxonomy): void
+    {
+        if ($this->guard->isImporting() || !$this->isVersionedTaxonomy($taxonomy)) {
+            return;
+        }
+
+        $term = get_term_by('term_taxonomy_id', $ttId, $taxonomy);
+        if (!$term instanceof \WP_Term) {
+            return;
+        }
+
+        // Rename vindo do ADMIN: linha existente tem a chave VELHA → rekey
+        // (resolve por tt_id, imune a rename) ANTES de marcar dirty.
+        $row = $this->termStateRowByTtId($ttId);
+        if ($row !== null && $row->ref->key !== $taxonomy . ':' . $term->slug) {
+            $adapter = $this->adapters->forTaxonomy($taxonomy);
+            $adapter?->rekey($ttId, $term->slug);
+        }
+
+        $this->state->markDirty(
+            \CVSync\Adapters\TermAdapter::refFor($taxonomy, $term->slug),
+            EntityStatus::DirtyDb
+        );
+    }
+
+    /**
+     * Dirty-mark REVERSO (cláusula obrigatória B.2.4): pre_delete_term dispara
+     * ANTES da remoção — relationships intactas. delete_term já as removeu
+     * (query lá = falso negativo silencioso). Uma query indexada (tt_id),
+     * bounded, filtrada a posts versionados.
+     * Também captura o uuid (termmeta some com a deleção) para o delete_term.
+     */
+    public function onPreDeleteTerm(\WP_Term $term, string $taxonomy): void
+    {
+        if ($this->guard->isImporting() || !$this->isVersionedTaxonomy($taxonomy)) {
+            return;
+        }
+
+        $this->pendingTermDeletes[(int) $term->term_taxonomy_id] = [
+            'uuid' => (string) get_term_meta($term->term_id, '_cvsync_uuid', true),
+            'key'  => $taxonomy . ':' . $term->slug,
+        ];
+
+        $objectIds = get_objects_in_term([$term->term_id], $taxonomy); // API pública, indexada
+        if (is_wp_error($objectIds)) {
+            return;
+        }
+        foreach ($objectIds as $postId) {
+            $post = get_post((int) $postId);
+            if ($post instanceof \WP_Post && in_array($post->post_type, $this->adapters->versionedPostTypes(), true)) {
+                $this->markPostDirty($post); // shutdown re-exporta o post SEM o termo deletado
+            }
+        }
+    }
+
+    /**
+     * delete_term (após deleção): marca dirty para o shutdown remover o
+     * arquivo + tombstone (E5-bis — termos não têm trash). O uuid vem do
+     * stash do pre_delete_term; sem uuid e sem linha de state, nada a fazer
+     * (verify reporta untracked).
+     */
+    public function onDeleteTerm(int $termId, int $ttId, string $taxonomy, mixed $deletedTerm): void
+    {
+        if ($this->guard->isImporting() || !$this->isVersionedTaxonomy($taxonomy)) {
+            return;
+        }
+
+        $stashed = $this->pendingTermDeletes[$ttId] ?? null;
+        unset($this->pendingTermDeletes[$ttId]);
+
+        $row = $this->termStateRowByTtId($ttId);
+        if ($row !== null) {
+            $this->state->markDirty($row->ref, EntityStatus::DirtyDb); // exportDirty: arquivo removido + tombstone
+            return;
+        }
+        if ($stashed !== null && $stashed['uuid'] !== '') {
+            // Linha ausente (nunca exportado): cria via markDirty para o shutdown
+            // remover eventual arquivo órfão com esse uuid — caminho de consistência.
+            $this->state->markDirty(EntityRef::of('term', $stashed['key']), EntityStatus::DirtyDb);
+        }
+    }
+
+    /** Term meta da whitelist (B.2.4) — alt/thumbnail de termos. Assinatura: ($meta_id, $term_id, $meta_key). */
+    public function onTermMetaChanged(mixed $metaId, int $termId, string $metaKey): void
+    {
+        if ($this->guard->isImporting() || str_starts_with($metaKey, '_cvsync_')) {
+            return;
+        }
+        $term = get_term($termId);
+        if (!$term instanceof \WP_Term) {
+            return;
+        }
+        $adapter = $this->adapters->forTaxonomy($term->taxonomy);
+        if ($adapter === null || !in_array($metaKey, $adapter->metaWhitelist(), true)) {
+            return;
+        }
+
+        $ref = $this->termRefByTtId((int) $term->term_taxonomy_id, $term->taxonomy);
+        if ($ref !== null) {
+            $this->state->markDirty($ref, EntityStatus::DirtyDb);
+        }
+    }
+
     /**
      * theme_mods do tema ativo: custom_logo (branding §A.6) e
      * nav_menu_locations (menus cujo vínculo mudou).
@@ -305,6 +427,42 @@ final class Hooks
     private function isInternalMeta(string $metaKey): bool
     {
         return str_starts_with($metaKey, '_cvsync_') || in_array($metaKey, self::EXCLUDED_META, true);
+    }
+
+    /** Taxonomia ∈ conjunto versionado (filtro cvsync/taxonomies, B.1.1). */
+    private function isVersionedTaxonomy(string $taxonomy): bool
+    {
+        return in_array($taxonomy, $this->adapters->versionedTaxonomies(), true);
+    }
+
+    /**
+     * EntityRef de termo por tt_id (imune a rename em trânsito): resolve o
+     * termo pela instância term_taxonomy e compõe '{taxonomy}:{slug}'.
+     */
+    private function termRefByTtId(int $ttId, string $taxonomy): ?\CVSync\Engine\EntityRef
+    {
+        $term = get_term_by('term_taxonomy_id', $ttId, $taxonomy);
+        if (!$term instanceof \WP_Term) {
+            return null;
+        }
+
+        return \CVSync\Adapters\TermAdapter::refFor($taxonomy, $term->slug);
+    }
+
+    /**
+     * Linha de state do termo por tt_id. O findByDbId do P2 é post-only
+     * (kind='post' hardcoded) — match em PHP sobre all('term') (escala alvo:
+     * centenas; uma vez por deleção/renome).
+     */
+    private function termStateRowByTtId(int $ttId): ?\CVSync\Storage\StateRecord
+    {
+        foreach ($this->state->all('term') as $record) {
+            if ($record->dbId === $ttId) {
+                return $record;
+            }
+        }
+
+        return null;
     }
 
     /** Dirty-mark com adoção: UUID garantido + db_id + pré-filtro db_modified. */

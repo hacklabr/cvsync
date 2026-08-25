@@ -49,6 +49,7 @@ class ComposerStaticInitd7b741e8c3ccb11b5c84a2b15831ab72
         'CVSync\\Adapters\\PostAdapter' => __DIR__ . '/../..' . '/includes/adapters/class-post-adapter.php',
         'CVSync\\Adapters\\ReferenceResolver' => __DIR__ . '/../..' . '/includes/adapters/class-reference-resolver.php',
         'CVSync\\Adapters\\RejectedEntityException' => __DIR__ . '/../..' . '/includes/adapters/class-adapter-exceptions.php',
+        'CVSync\\Adapters\\TermAdapter' => __DIR__ . '/../..' . '/includes/adapters/class-term-adapter.php',
         'CVSync\\Adapters\\UuidOwnershipMismatchException' => __DIR__ . '/../..' . '/includes/adapters/class-adapter-exceptions.php',
         'CVSync\\Admin\\AdminNotices' => __DIR__ . '/../..' . '/includes/admin/class-admin-notices.php',
         'CVSync\\Admin\\BlameMetabox' => __DIR__ . '/../..' . '/includes/admin/class-blame-metabox.php',

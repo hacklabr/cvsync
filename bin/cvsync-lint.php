@@ -416,6 +416,53 @@ foreach ($textFiles as [$rel, $abs]) {
         continue;
     }
 
+    // Apêndice B.3 — sidecar de termo (espelho do menu + parent/taxonomy×dir).
+    if (str_ends_with($rel, '.term.yml')) {
+        try {
+            $doc = $parseYaml($bytes);
+        } catch (\Throwable $e) {
+            $report->error($rel, 'frontmatter', $e->getMessage());
+            continue;
+        }
+        foreach (['uuid', 'taxonomy', 'slug', 'name'] as $key) {
+            if (!isset($doc[$key]) || $doc[$key] === '') {
+                $report->error($rel, 'schema', "term document missing required key '{$key}'.");
+            }
+        }
+        if (isset($doc['uuid']) && preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i', (string) $doc['uuid']) !== 1) {
+            $report->error($rel, 'schema', "'uuid' is not a UUID.");
+        }
+        if (isset($doc['taxonomy']) && preg_match('/^[a-z0-9_.\-]+$/', (string) $doc['taxonomy']) !== 1) {
+            $report->error($rel, 'schema', "'taxonomy' must match sanitize_key alphabet (no ':').");
+        }
+        if (isset($doc['slug']) && preg_match('/^[a-z0-9][a-z0-9\-]*$/', (string) $doc['slug']) !== 1) {
+            $report->error($rel, 'schema', "'slug' violates ^[a-z0-9][a-z0-9\\-]*\$ (§6.4/B.3).");
+        }
+        if (isset($doc['slug']) && basename($rel, '.term.yml') !== (string) $doc['slug']) {
+            $report->error($rel, 'schema', "file name must equal 'slug' (found '" . basename($rel, '.term.yml') . "' vs '{$doc['slug']}').");
+        }
+        if (isset($doc['parent'])) {
+            if (!is_string($doc['parent']) && $doc['parent'] !== null) {
+                $report->error($rel, 'schema', "'parent' must be a slug string or null.");
+            } elseif (is_string($doc['parent']) && preg_match('/^[a-z0-9][a-z0-9\-]*$/', $doc['parent']) !== 1) {
+                $report->error($rel, 'schema', "'parent' must be a slug of the SAME taxonomy (§6.4/B.4).");
+            }
+        }
+        if (isset($doc['hash']) && preg_match('/^sha256:[0-9a-f]{64}$/', (string) $doc['hash']) !== 1) {
+            $report->error($rel, 'schema', "'hash' must be sha256:<64 hex>.");
+        }
+        if (isset($doc['meta']) && !is_array($doc['meta'])) {
+            $report->error($rel, 'schema', "'meta' must be a map.");
+        }
+        // taxonomy × diretório: content/terms/{dir}/{slug}.term.yml, com o dir
+        // default sanitizado (B.1.1 + 🟡B4: '_'/'.' → '-'). Sem a config do
+        // filtro não sabemos o dir custom — validamos apenas a forma do prefixo.
+        if (isset($doc['taxonomy']) && !preg_match('#^terms/[a-z0-9][a-z0-9\-]*/#', $rel)) {
+            $report->error($rel, 'layout', 'term sidecar must live under content/terms/<taxonomy-dir>/ (B.3).');
+        }
+        continue;
+    }
+
     if (str_ends_with($rel, '.html')) {
         try {
             [$fm, $body] = $splitDocument($bytes);

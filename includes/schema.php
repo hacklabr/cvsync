@@ -11,6 +11,12 @@
  *  - A3: coluna `trigger` renomeada para `trigger_src` (palavra reservada no
  *    MariaDB; $wpdb->insert() não emite backticks).
  *
+ * Apêndice B (§B.5, delta 2→3): entity_key VARCHAR(191) → VARCHAR(255) nas
+ * TRÊS tabelas — a chave composta '{taxonomy}:{slug}' chega a 32+1+200=233 no
+ * pior caso do core; 191 estouraria em strict mode num termo legítimo.
+ * Conflicts/log gravam a mesma chave — alargar só a state criaria falha de
+ * append justamente no evento raro.
+ *
  * Convenções dbDelta: dois espaços após "PRIMARY KEY", KEY (não INDEX), um
  * campo por linha, sem CHECK/ENUM (validação de domínio na aplicação — enums
  * deste pacote), sem FKs (padrão WP). Nenhum índice em tabelas do core.
@@ -28,11 +34,12 @@ final class Schema
 {
     /**
      * 1 = 3 tabelas base (spec §9); 2 = delta mídia §A.4.2 (bin_hash/bin_size/
-     * bin_mtime + idx_binhash). A primeira instalação deste código já nasce na
-     * versão 2 (delta consolidado na DDL); a numeração serve ao gate §5.9 e a
+     * bin_mtime + idx_binhash); 3 = delta termos §B.5 (entity_key 191→255 nas
+     * três tabelas). A primeira instalação deste código já nasce na versão
+     * atual (deltas consolidados na DDL); a numeração serve ao gate §5.9 e a
      * upgrades futuros.
      */
-    public const SCHEMA_VERSION = 2;
+    public const SCHEMA_VERSION = 3;
 
     /** Option com a versão instalada (autoload=no). */
     public const OPTION_NAME = 'cvsync_schema_version';
@@ -70,7 +77,7 @@ final class Schema
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   entity_kind VARCHAR(32) NOT NULL,
   post_type VARCHAR(20) NOT NULL DEFAULT '',
-  entity_key VARCHAR(191) NOT NULL,
+  entity_key VARCHAR(255) NOT NULL,
   db_id BIGINT UNSIGNED NULL,
   db_hash CHAR(64) NULL,
   db_modified DATETIME NULL,
@@ -101,7 +108,7 @@ final class Schema
             'conflicts' => "CREATE TABLE {$conflicts} (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   entity_kind VARCHAR(32) NOT NULL,
-  entity_key VARCHAR(191) NOT NULL,
+  entity_key VARCHAR(255) NOT NULL,
   loser_side VARCHAR(8) NOT NULL,
   loser_payload MEDIUMTEXT NOT NULL,
   winner VARCHAR(8) NOT NULL,
@@ -118,7 +125,7 @@ final class Schema
             'log' => "CREATE TABLE {$log} (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   entity_kind VARCHAR(32) NOT NULL DEFAULT '',
-  entity_key VARCHAR(191) NOT NULL DEFAULT '',
+  entity_key VARCHAR(255) NOT NULL DEFAULT '',
   post_type VARCHAR(20) NOT NULL DEFAULT '',
   direction VARCHAR(16) NOT NULL DEFAULT '',
   trigger_src VARCHAR(32) NOT NULL DEFAULT '',
@@ -139,9 +146,10 @@ final class Schema
     }
 
     /**
-     * Activation hook do schema: dbDelta() idempotente das 3 tabelas + bump da
-     * option de versão. Chamado por register_activation_hook() em cvsync.php
-     * (arquivo do P6).
+     * Activation/upgrade hook do schema: dbDelta() idempotente das 3 tabelas +
+     * migration manual do delta B.5 + bump da option de versão. Chamado por
+     * register_activation_hook() em cvsync.php (P6) e pelo passo de migrations
+     * do pipeline (pré-apply, §12.3).
      *
      * Nunca lança em ambiente sem privilégio DDL: retorna false e loga; a
      * recusa dura de operação fica no gate assertNoPendingMigration() (§5.9).
@@ -162,7 +170,75 @@ final class Schema
             return false;
         }
 
+        if (! self::migrateEntityKeyWidth()) {
+            return false;
+        }
+
         update_option(self::OPTION_NAME, self::SCHEMA_VERSION, '', false);
+
+        return true;
+    }
+
+    /**
+     * Delta B.5 (2→3): entity_key VARCHAR(191) → VARCHAR(255) nas três tabelas.
+     *
+     * dbDelta EMITE CHANGE COLUMN quando o token de tipo diverge
+     * (varchar(191) ≠ varchar(255)) — é um dos poucos ALTERs que ele cobre.
+     * Este passo manual é o cinto-e-suspenders: verifica o COLUMN_TYPE real em
+     * INFORMATION_SCHEMA e emite o MODIFY apenas se necessário — idempotente
+     * por construção (rodar 2× = zero diff na 2ª; critério B.8.12) e imune a
+     * qualquer edge case de parsing do dbDelta em upgrades 2→3.
+     *
+     * ROLLBACK (runbook de downgrade 3→2 — transcrição §B.5):
+     *   0. Pré-condição em cada UMA das três tabelas (falha aborta o downgrade):
+     *        SELECT MAX(LENGTH(entity_key)) <= 191 FROM {tabela};
+     *   1. ALTER TABLE {$wpdb->prefix}cvsync_state
+     *        MODIFY entity_key VARCHAR(191) NOT NULL;
+     *      ALTER TABLE {$wpdb->prefix}cvsync_conflicts
+     *        MODIFY entity_key VARCHAR(191) NOT NULL;
+     *      ALTER TABLE {$wpdb->prefix}cvsync_log
+     *        MODIFY entity_key VARCHAR(191) NOT NULL DEFAULT '';
+     *   2. Bump manual da option cvsync_schema_version para 2.
+     *
+     * @return bool false em erro de DDL (logado; o gate §5.9 continua recusando).
+     */
+    private static function migrateEntityKeyWidth(): bool
+    {
+        global $wpdb;
+
+        $definitions = [
+            // suffix => definição completa da coluna no alvo
+            'state'     => 'VARCHAR(255) NOT NULL',
+            'conflicts' => 'VARCHAR(255) NOT NULL',
+            'log'       => "VARCHAR(255) NOT NULL DEFAULT ''",
+        ];
+
+        foreach ($definitions as $suffix => $columnDef) {
+            $table = self::table($suffix);
+
+            $columnType = $wpdb->get_var(
+                $wpdb->prepare(
+                    "SELECT COLUMN_TYPE FROM INFORMATION_SCHEMA.COLUMNS
+                     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s AND COLUMN_NAME = 'entity_key'",
+                    $table
+                )
+            );
+
+            // Tabela inexistente (instalação fresca) ou já migrada → no-op.
+            if (null === $columnType || 'varchar(255)' === strtolower((string) $columnType)) {
+                continue;
+            }
+
+            $wpdb->query(
+                $wpdb->prepare("ALTER TABLE %i MODIFY entity_key {$columnDef}", $table)
+            );
+
+            if ('' !== $wpdb->last_error) {
+                // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+                error_log(sprintf('[cvsync] B.5 migration failed on %s: %s', $table, $wpdb->last_error));
+                return false;
+            }
+        }
 
         return true;
     }

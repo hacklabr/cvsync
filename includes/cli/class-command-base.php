@@ -135,4 +135,86 @@ abstract class CommandBase
 
         return 90;
     }
+
+    // ------------------------------------------------------------------
+    // Termos de taxonomia (Apêndice B — B.1.1/B.2.1/B.7.1)
+    // ------------------------------------------------------------------
+
+    /**
+     * Taxonomias versionadas: filtro `cvsync/taxonomies` (default vazio, B.1.1).
+     * Consome `AdapterRegistry::versionedTaxonomies()` quando o CMS o expuser;
+     * senão lê o filtro diretamente (a config é do ambiente, não de classe).
+     *
+     * @return list<string>
+     */
+    protected function versionedTaxonomies(): array
+    {
+        // Fonte única: o registry (B.1.1 — mesmo filtro cvsync/taxonomies; o
+        // fallback de leitura direta foi removido na integração do Apêndice B).
+        return $this->c->adapters->versionedTaxonomies();
+    }
+
+    /**
+     * Enumera os termos de uma taxonomia versionada como entidades
+     * kind='term', entity_key='{taxonomy}:{slug}' (B.2.1). ensureUuid recebe
+     * o term_taxonomy_id (db_id=tt_id — term_id nunca é persistido).
+     *
+     * @return list<array{0: EntityRef, 1: \CVSync\Adapters\EntityAdapter|null}>
+     */
+    protected function enumerateVersionedTerms(string $taxonomy): array
+    {
+        $terms = get_terms([
+            'taxonomy'   => $taxonomy,
+            'hide_empty' => false,
+            'number'     => 0,
+            'fields'     => 'all',
+        ]);
+
+        if (is_wp_error($terms)) {
+            \WP_CLI::warning(sprintf('taxonomia %s ilegível: %s', $taxonomy, $terms->get_error_message()));
+
+            return [];
+        }
+
+        $found = [];
+        foreach ($terms as $term) {
+            $ref     = EntityRef::of('term', $taxonomy . ':' . $term->slug);
+            $adapter = $this->c->adapters->forRef($ref);
+            if (null !== $adapter) {
+                $adapter->ensureUuid((int) $term->term_taxonomy_id); // termmeta _cvsync_uuid (B.2.3)
+            }
+            $found[] = [$ref, $adapter];
+        }
+
+        return $found;
+    }
+
+    /**
+     * Exporta UM termo (B.7.1): o Exporter GENÉRICO é o fluxo canônico — termo
+     * é YAML-integral SEM blob (B.3/B.4; o risco R1 de sidecar-sem-binário não
+     * existe nesta entidade), com lock fail-open, idempotência e FS read-only
+     * nativos. O probe `exportTerm()` permanece como ponto de extensão caso
+     * um fluxo dedicado surgja (padrão exportAttachment) — hoje é no-op.
+     *
+     * @return \CVSync\Storage\LogResult|\CVSync\ExportResult|null LogResult do
+     *         fluxo dedicado (?LogResult), ExportResult do genérico, ou null.
+     */
+    protected function exportTermOnce(EntityRef $ref, ?\CVSync\Adapters\EntityAdapter $adapter): \CVSync\Storage\LogResult|\CVSync\ExportResult|null
+    {
+        if (null !== $adapter && method_exists($adapter, 'exportTerm')) {
+            return $adapter->exportTerm($ref, 'cli');
+        }
+
+        return $this->c->exporter->export($ref, 'cli');
+    }
+
+    /** Normaliza exportTermOnce() para o LogResult (ou null = lock fail-open). */
+    protected function termOutcome(\CVSync\Storage\LogResult|\CVSync\ExportResult|null $result): ?\CVSync\Storage\LogResult
+    {
+        if ($result instanceof \CVSync\Storage\LogResult) {
+            return $result;
+        }
+
+        return $result?->outcome;
+    }
 }

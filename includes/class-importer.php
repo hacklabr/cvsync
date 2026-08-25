@@ -55,6 +55,9 @@ final class Importer
     /** Pais pendentes de resolução no lote: list<array{0:string,1:string,2:string,3:string}> (searchType — 'any' p/ attachments, uuid, parentSlug, entityType). */
     private array $pendingParents = [];
 
+    /** Apêndice B.6.4: list<array{0:string,1:string,2:string}> (taxonomy, entity_key, parentSlug). */
+    private array $pendingTermParents = [];
+
     public function __construct(
         private readonly AdapterRegistry $adapters,
         private readonly StateStore $state,
@@ -140,6 +143,10 @@ final class Importer
         $this->resolver->flushCaches(); // 🟡8: o slug recém-importado pode estar null-cacheado
 
         $converged = 0;
+        // Matching do P2 (B.5): pendingMentions() casa o argumento exato contra
+        // refs[] E term_refs[] (qualificado '{taxonomy}:{slug}'), e slug puro
+        // também como sufixo ':{slug}' das qualificadas. Aceitamos os DOIS
+        // formatos aqui (slug do post/attachment e forma qualificada de termo).
         foreach ($this->state->findPendingReferencing($slug) as $record) {
             $adapter = $this->adapters->forRef($record->ref);
             if ($adapter === null) {
@@ -159,14 +166,14 @@ final class Importer
     }
 
     /**
-     * Parent-fixup ao final do lote (idempotente por cláusula — §A.5.2.8):
-     * compara o parent atual com o resolvido antes de qualquer write.
+     * Parent-fixup ao final do lote (idempotente por cláusula — §A.5.2.8 e
+     * B.6.4 para terms): compara o parent atual com o resolvido antes de qualquer write.
      *
      * @return int Parents corrigidos.
      */
     public function fixupParents(ImportContext $ctx): int
     {
-        if ($this->pendingParents === []) {
+        if ($this->pendingParents === [] && $this->pendingTermParents === []) {
             return 0;
         }
 
@@ -176,8 +183,10 @@ final class Importer
         $fixed = 0;
         $queue = $this->pendingParents;
         $this->pendingParents = [];
+        $termQueue = $this->pendingTermParents;
+        $this->pendingTermParents = [];
 
-        $this->guard->run(function () use ($queue, &$fixed): void {
+        $this->guard->run(function () use ($queue, $termQueue, &$fixed): void {
             foreach ($queue as [$searchType, $uuid, $parentSlug, $entityType]) {
                 $parentId = $this->resolver->postIdForSlug($searchType, $parentSlug);
                 if ($parentId === null) {
@@ -192,6 +201,25 @@ final class Importer
                     continue; // idempotente: igual → zero write
                 }
                 wp_update_post(wp_slash(['ID' => $post->ID, 'post_parent' => $parentId]), true);
+                $fixed++;
+            }
+
+            // Apêndice B.6.4 — parent de TERMOS: resolve por (taxonomy, slug),
+            // compara term->parent antes de escrever (idempotente).
+            foreach ($termQueue as [$taxonomy, $entityKey, $parentSlug]) {
+                $parent = get_term_by('slug', $parentSlug, $taxonomy);
+                if (!$parent instanceof \WP_Term) {
+                    continue; // pai ainda ausente — próximo lote
+                }
+                $record = $this->state->get(\CVSync\Engine\EntityRef::of('term', $entityKey));
+                if ($record === null || $record->dbId === null) {
+                    continue;
+                }
+                $term = get_term_by('term_taxonomy_id', $record->dbId, $taxonomy);
+                if (!$term instanceof \WP_Term || (int) $term->parent === (int) $parent->term_id) {
+                    continue; // idempotente: igual → zero write
+                }
+                wp_update_term((int) $term->term_id, $taxonomy, ['parent' => (int) $parent->term_id]);
                 $fixed++;
             }
         });
@@ -216,6 +244,13 @@ final class Importer
             $this->pendingParents[] = [$searchType, $doc->uuid(), $parentSlug, $adapter->postType()];
         }
 
+        // Apêndice B.6.4 — parent de termo para o fixup de fim de lote.
+        if ($adapter instanceof \CVSync\Adapters\TermAdapter
+            && is_string($parentSlug) && $parentSlug !== ''
+        ) {
+            $this->pendingTermParents[] = [(string) ($doc->frontmatter['taxonomy'] ?? ''), $doc->ref->key, $parentSlug];
+        }
+
         /**
          * Guard EXTERNO × tx INTERNA (r1-t2) — e a state table comita na MESMA
          * transação do conteúdo (§2.2.4/§5.9; r8, 🟡7): apply + upsert(db_id) +
@@ -232,7 +267,7 @@ final class Importer
 
                     if ($apply->hasStructuralBlockers()) {
                         // §6.2 estrutural: nada foi gravado — pending_ref + payload.
-                        $this->state->setPendingPayload($doc->ref, ['refs' => $apply->pendingSlugs()]);
+                        $this->state->setPendingPayload($doc->ref, self::pendingPayloadOf($apply));
                         $this->state->setStatus($doc->ref, EntityStatus::PendingRef);
 
                         return $apply;
@@ -250,9 +285,10 @@ final class Importer
                         $this->paths->mtime($relative)
                     );
 
-                    if ($apply->pendingSlugs() !== []) {
-                        // Importado com placeholder literal (inerte) — pending_ref (§6.2).
-                        $this->state->setPendingPayload($doc->ref, ['refs' => $apply->pendingSlugs()]);
+                    if ($apply->hasPendencies()) {
+                        // Importado com pendências (placeholder literal inerte §6.2;
+                        // term_refs[] qualificadas B.6.3) — pending_ref.
+                        $this->state->setPendingPayload($doc->ref, self::pendingPayloadOf($apply));
                         $this->state->setStatus($doc->ref, EntityStatus::PendingRef);
                     }
 
@@ -277,7 +313,36 @@ final class Importer
             $this->reprocessPendingRefs($doc->slug(), $ctx);
         }
 
-        return new ImportResult(LogResult::Applied, $apply->dbId, $hash, $pendencies);
+        // Apêndice B.6.3: termo recém-aplicado destrava posts pendentes por
+        // term_refs[] — reprocessa também pela forma QUALIFICADA.
+        if ($doc->ref->kind === 'term') {
+            $taxonomy = (string) ($doc->frontmatter['taxonomy'] ?? '');
+            if ($taxonomy !== '' && $doc->slug() !== '') {
+                $this->reprocessPendingRefs($taxonomy . ':' . $doc->slug(), $ctx);
+            }
+        }
+
+        return new ImportResult(LogResult::Applied, $apply->dbId, $hash, [...$pendencies, ...$apply->pendingTermRefs]);
+    }
+
+    /**
+     * Payload normativo de pendências (§6.2 + B.5/B.6.3): chaves só quando
+     * não-vazias — refs[] (BC, slugs planos) e term_refs[] (qualificadas).
+     *
+     * @param ApplyResult $apply
+     * @return array<string, list<string>>
+     */
+    private static function pendingPayloadOf(ApplyResult $apply): array
+    {
+        $payload = [];
+        if ($apply->pendingSlugs() !== []) {
+            $payload['refs'] = $apply->pendingSlugs();
+        }
+        if ($apply->pendingTermRefs !== []) {
+            $payload['term_refs'] = $apply->pendingTermRefs;
+        }
+
+        return $payload;
     }
 
     /**

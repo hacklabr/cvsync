@@ -223,6 +223,20 @@ final class CommandBootstrap extends CommandBase
             }
         }
 
+        // Termos das taxonomias versionadas (Apêndice B.7.1): padrão pós-r10 —
+        // fluxo dedicado exportTerm() quando o TermAdapter o expõe; senão o
+        // Exporter genérico (termo é YAML-integral sem blob — sem o risco R1).
+        foreach ($this->versionedTaxonomies() as $taxonomy) {
+            foreach ($this->enumerateVersionedTerms($taxonomy) as [$ref, $adapter]) {
+                $outcome = $this->termOutcome($this->exportTermOnce($ref, $adapter));
+                match ($outcome) {
+                    LogResult::Applied                   => $summary['exported']++,
+                    LogResult::Error, LogResult::Rejected => $summary['errors']++,
+                    default                              => $summary['rediscovered']++, // idempotent/lock fail-open
+                };
+            }
+        }
+
         // Kinds não-post (🟡5 do r7): menus clássicos e branding também entram
         // no seed "banco é autoridade" — sem isso ficam fora do repo até a
         // primeira edição.

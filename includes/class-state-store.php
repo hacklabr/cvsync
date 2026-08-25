@@ -172,11 +172,21 @@ final class StateStore
      * entidades, §13.9) o conjunto pending_ref é de zero a poucas dezenas de
      * linhas; o filtro em PHP custa microssegundos.
      *
-     * O filtro é ESTRUTURAL: espera o array plano de slugs no topo do payload
-     * ({"refs": ["slug-a", ...], ...}) — contrato com o Importer (P3).
+     * O filtro é ESTRUTURAL sobre listas planas no topo do payload — contrato
+     * com o Importer (P3): {"refs": ["slug-a", ...]} (v1 — posts/attachments)
+     * e, desde o Apêndice B (§B.5), a lista irmã {"term_refs": ["{taxonomy}:{slug}", ...]}
+     * com strings QUALIFICADAS (slug puro de termo é ambíguo em duas dimensões:
+     * contra slug de post e contra slug de termo de outra taxonomia).
      *
-     * @param string|null $mentionedSlug Quando informado, retorna só as
-     *        pendências que mencionam o slug.
+     * Casamento do argumento ($mentionedSlug, §B.5):
+     *  - contra refs[]: exato (slugs de post/attachment nunca contêm ':');
+     *  - contra term_refs[]: forma qualificada ('{taxonomy}:{slug}') casa
+     *    exata; slug PURO casa como SUFIXO (":{slug}") — cobre o chamador que
+     *    só conhece o slug do termo que acabou de chegar;
+     *  - BC preservada: payloads só-refs[] comportam-se como na v1.
+     *
+     * @param string|null $mentionedSlug Slug puro OU forma qualificada
+     *        '{taxonomy}:{slug}'; null = todas as pendências.
      * @return list<StateRecord>
      */
     public function pendingRefs(?string $mentionedSlug = null): array
@@ -199,8 +209,38 @@ final class StateStore
 
         return array_values(array_filter(
             $records,
-            static fn (StateRecord $r): bool => in_array($mentionedSlug, $r->pendingPayload['refs'] ?? [], true)
+            static fn (StateRecord $r): bool => self::pendingMentions($r, $mentionedSlug)
         ));
+    }
+
+    /**
+     * O payload menciona o argumento? (v1: refs[]; Apêndice B: term_refs[]
+     * qualificado — slug puro casa como sufixo ":{slug}"; §B.5.)
+     */
+    private static function pendingMentions(StateRecord $record, string $needle): bool
+    {
+        $payload = $record->pendingPayload ?? [];
+
+        $refs = $payload['refs'] ?? [];
+        if (in_array($needle, $refs, true)) {
+            return true;
+        }
+
+        $termRefs = $payload['term_refs'] ?? [];
+        if (in_array($needle, $termRefs, true)) {
+            return true; // forma qualificada: casa exata
+        }
+
+        if (! str_contains($needle, ':')) {
+            $suffix = ':' . $needle;
+            foreach ($termRefs as $termRef) {
+                if (is_string($termRef) && str_ends_with($termRef, $suffix)) {
+                    return true; // slug puro: casa como sufixo em term_refs[]
+                }
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -234,36 +274,36 @@ final class StateStore
      * Escopo: linhas não-tombstone com db_hash computado (entidades vivas dos
      * dois lados; tombstones estão fora por definição de "conteúdo").
      *
+     * Apêndice B (§B.7.2): $entityKeyPrefix permite a árvore POR TAXONOMIA para
+     * kind='term' (ex.: treeHash('term', '', 'category:')) — range scan por
+     * prefixo no próprio uq_entity, e a composição do hash permanece neste
+     * pacote (duplicá-la no verifier seria a fonte única morrendo). Extensão
+     * opcional do B.7.2; sem prefixo = todas as taxonomias do kind (BC).
+     *
      * @param string $postType '' = todos os post types do kind.
+     * @param string|null $entityKeyPrefix Prefixo de entity_key (ex. 'category:')
+     *        — para kind='term', delimita a árvore à taxonomia.
      */
-    public function treeHash(string $kind, string $postType = ''): string
+    public function treeHash(string $kind, string $postType = '', ?string $entityKeyPrefix = null): string
     {
-        if ('' === $postType) {
-            $rows = $this->db->get_results(
-                $this->db->prepare(
-                    "SELECT entity_key, db_hash FROM %i
-                     WHERE entity_kind = %s AND status != %s AND db_hash IS NOT NULL
-                     ORDER BY entity_key ASC",
-                    $this->table(),
-                    $kind,
-                    EntityStatus::Tombstone->value
-                ),
-                ARRAY_A
-            );
-        } else {
-            $rows = $this->db->get_results(
-                $this->db->prepare(
-                    "SELECT entity_key, db_hash FROM %i
-                     WHERE entity_kind = %s AND post_type = %s AND status != %s AND db_hash IS NOT NULL
-                     ORDER BY entity_key ASC",
-                    $this->table(),
-                    $kind,
-                    $postType,
-                    EntityStatus::Tombstone->value
-                ),
-                ARRAY_A
-            );
+        $sql    = "SELECT entity_key, db_hash FROM %i WHERE entity_kind = %s AND status != %s AND db_hash IS NOT NULL";
+        $params = [$this->table(), $kind, EntityStatus::Tombstone->value];
+
+        if ('' !== $postType) {
+            $sql     .= ' AND post_type = %s';
+            $params[] = $postType;
         }
+
+        if (null !== $entityKeyPrefix) {
+            // esc_like: o prefixo é input do chamador (taxonomia sanitizada na
+            // prática, mas % e _ devem ser literais se ever presentes).
+            $sql     .= ' AND entity_key LIKE %s';
+            $params[] = $this->db->esc_like($entityKeyPrefix) . '%';
+        }
+
+        $sql .= ' ORDER BY entity_key ASC';
+
+        $rows = $this->db->get_results($this->db->prepare($sql, ...$params), ARRAY_A);
         $this->assertNoError('state.treeHash');
 
         $lines = array_map(
@@ -540,6 +580,71 @@ final class StateStore
     }
 
     /**
+     * Rename de entity_key de uma linha existente (Apêndice B §B.2.3: rename
+     * admin de slug de termo — o adapter resolve a linha pelo idx_db com
+     * db_id=term_taxonomy_id, imune a rename, e rekey atualiza a chave).
+     *
+     * Contrato:
+     *  - kind e postType são INVARIANTES (rename muda só a chave; rename de
+     *    taxonomy é evento de identidade — entidade nova + tombstone, §B.7.4 —
+     *    NÃO rekey);
+     *  - executa em transação com SELECT ... FOR UPDATE na linha origem
+     *    (via withLockedRow — a única porta);
+     *  - checa colisão de uq_entity no destino ANTES do update: destino
+     *    existente ⇒ StorageException (nunca sobrescreve); race concorrente
+     *    entre check e update cai no duplicate key do banco ⇒ rollback +
+     *    StorageException — falha alta dos dois lados;
+     *  - hashs/status/db_id preservados (é a MESMA entidade, só a chave muda).
+     *
+     * @throws \InvalidArgumentException kind/postType divergentes.
+     * @throws StorageException Origem inexistente, destino colidindo ou erro de banco.
+     */
+    public function rekey(EntityRef $from, EntityRef $to): StateRecord
+    {
+        if ($from->kind !== $to->kind || $from->postType !== $to->postType) {
+            throw new \InvalidArgumentException(
+                sprintf(
+                    'rekey: kind/post_type são invariantes (%s → %s); rename de taxonomy é evento de identidade (§B.7.4).',
+                    $from->toTupleString(),
+                    $to->toTupleString()
+                )
+            );
+        }
+
+        return $this->withLockedRow($from, function (?StateRecord $locked) use ($from, $to): StateRecord {
+            if (null === $locked) {
+                throw new StorageException(sprintf('rekey: linha origem inexistente (%s).', $from->toTupleString()));
+            }
+
+            $existing = $this->get($to);
+            if (null !== $existing) {
+                throw new StorageException(
+                    sprintf('rekey: destino já existe (%s) — colisão de uq_entity, nada foi gravado.', $to->toTupleString())
+                );
+            }
+
+            $result = $this->db->update(
+                $this->table(),
+                ['entity_key' => $to->key, 'updated_at' => $this->now()],
+                [
+                    'entity_kind' => $from->kind,
+                    'post_type'   => $from->postType,
+                    'entity_key'  => $from->key,
+                ],
+                ['%s', '%s'],
+                ['%s', '%s', '%s']
+            );
+            if (false === $result) {
+                $this->assertNoError('state.rekey');
+                throw new StorageException('state.rekey falhou sem last_error.');
+            }
+
+            return $this->get($to)
+                ?? throw new StorageException(sprintf('rekey: linha destino ausente após update (%s).', $to->toTupleString()));
+        });
+    }
+
+    /**
      * Bulk update do HEAD aplicado ao final do apply (dirty flag O(1) do
      * trigger passivo, §8.2). $refs = entidades tocadas no lote.
      *
@@ -733,6 +838,88 @@ final class StateStore
             ARRAY_A
         );
         $this->assertNoError('state.findDanglingPostRefs');
+
+        return array_map(StateRecord::fromRow(...), $rows ?: []);
+    }
+
+    /**
+     * Anti-join de cobertura de TERMS (Apêndice B §B.7.2): termos no banco das
+     * taxonomias versionadas SEM linha de state — furo de cobertura do
+     * `wp sync verify`.
+     *
+     * O casamento é por db_id=term_taxonomy_id (NUNCA por entity_key — imune a
+     * rename em trânsito; §B.2.1). Linha qualquer (inclusive tombstone) conta
+     * como "rastreado" — termo existente no banco sob tombstone é ressurreição,
+     * classificada pelo engine no checkpoint, não furo de cobertura.
+     *
+     * Padrão dos anti-joins deste pacote: leitura read-only das tabelas core
+     * ($wpdb->term_taxonomy/$wpdb->terms), NENHUM índice criado nelas, escopo
+     * injetado pelo chamador (a lista de taxonomias versionadas vive no
+     * filtro cvsync/taxonomies — P3).
+     *
+     * @param list<string> $taxonomies Taxonomias versionadas (escopo do chamador).
+     * @return list<array{tt_id: int, taxonomy: string, slug: string, name: string}>
+     */
+    public function findUntrackedTerms(array $taxonomies): array
+    {
+        if ([] === $taxonomies) {
+            return [];
+        }
+
+        $placeholders = implode(', ', array_fill(0, count($taxonomies), '%s'));
+        $tt           = $this->db->term_taxonomy;
+        $terms        = $this->db->terms;
+        $table        = $this->table();
+
+        $rows = $this->db->get_results(
+            $this->db->prepare(
+                "SELECT t.term_taxonomy_id AS tt_id, t.taxonomy, te.slug, te.name
+                 FROM {$tt} t
+                 JOIN {$terms} te ON te.term_id = t.term_id
+                 LEFT JOIN {$table} s ON s.entity_kind = 'term' AND s.db_id = t.term_taxonomy_id
+                 WHERE t.taxonomy IN ({$placeholders}) AND s.id IS NULL
+                 ORDER BY t.taxonomy ASC, te.slug ASC",
+                ...$taxonomies
+            ),
+            ARRAY_A
+        );
+        $this->assertNoError('state.findUntrackedTerms');
+
+        return array_map(
+            static fn (array $r): array => [
+                'tt_id'    => (int) $r['tt_id'],
+                'taxonomy' => (string) $r['taxonomy'],
+                'slug'     => (string) $r['slug'],
+                'name'     => (string) $r['name'],
+            ],
+            $rows ?: []
+        );
+    }
+
+    /**
+     * Anti-join de consistência de TERMS (§B.7.2): linhas kind='term' com db_id
+     * cujo termo sumiu do banco SEM tombstone — inconsistência interna (deleção
+     * fora dos hooks, manipulação direta de banco).
+     *
+     * @return list<StateRecord>
+     */
+    public function findDanglingTermRefs(): array
+    {
+        $tt    = $this->db->term_taxonomy;
+        $table = $this->table();
+
+        $rows = $this->db->get_results(
+            $this->db->prepare(
+                "SELECT s.* FROM {$table} s
+                 LEFT JOIN {$tt} t ON t.term_taxonomy_id = s.db_id
+                 WHERE s.entity_kind = 'term' AND s.db_id IS NOT NULL
+                   AND s.status != %s AND t.term_taxonomy_id IS NULL
+                 ORDER BY s.id ASC",
+                EntityStatus::Tombstone->value
+            ),
+            ARRAY_A
+        );
+        $this->assertNoError('state.findDanglingTermRefs');
 
         return array_map(StateRecord::fromRow(...), $rows ?: []);
     }

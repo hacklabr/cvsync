@@ -33,8 +33,28 @@ final class AdapterRegistry
     /** @var array<string,EntityAdapter> kind => adapter (kinds não-post) */
     private array $byKind = [];
 
-    /** @var array<int,list<EntityAdapter>> estágio => adapters (§A.5.7) */
+    /** @var array<string,TermAdapter> taxonomy => adapter (Apêndice B.2.1) */
+    private array $byTaxonomy = [];
+
+    /**
+     * 🟡B4 (r-b-verify): dir default sanitizado — sanitize_key permite '_' e
+     * '.', que o SLUG_PATTERN do PathGuard rejeita em segmento de diretório
+     * ('projeto_tag' → 'projeto_tags' quebraria todo export/import). Normaliza
+     * para o alfabeto de path: underscore/ponto → hífen (precedente: menus/
+     * attachments derivam de slugs já higienizados).
+     */
+    private static function defaultDirectoryFor(string $taxonomy): string
+    {
+        return str_replace(['_', '.'], '-', $taxonomy) . 's';
+    }
+
+    /** @var array<int,list<EntityAdapter>> estágio => adapters (§A.5.7 + B.6.2) */
     private array $stages = [];
+
+    /** Apêndice B.1.2 — deny-list normativa: já têm dono ou são estruturais. */
+    public const DENIED_TAXONOMIES = [
+        'nav_menu', 'wp_theme', 'wp_pattern_category', 'wp_template_part_area', 'link_category', 'post_format',
+    ];
 
     public function __construct(
         private readonly StateStore $state,
@@ -136,32 +156,97 @@ final class AdapterRegistry
             $this->register($adapter, (int) $config['stage']);
         }
 
+        // Apêndice B.1.1: taxonomias versionadas — filtro default VAZIO,
+        // estágio 0 (ordem interna attachments→termos garantida em byStage()).
+        foreach ($this->taxonomyConfig() as $taxonomy => $config) {
+            $whitelist = apply_filters(
+                'cvsync/term_meta_whitelist',
+                (array) ($config['meta'] ?? ['thumbnail_id']),
+                $taxonomy
+            );
+
+            $this->register(
+                new TermAdapter(
+                    $this->state,
+                    $this->resolver,
+                    $this->paths,
+                    $taxonomy,
+                    (string) ($config['dir'] ?? self::defaultDirectoryFor($taxonomy)),
+                    array_values($whitelist)
+                ),
+                0
+            );
+        }
+
         $this->register(new GlobalStylesAdapter($this->state, $this->resolver, $this->paths), 2);
         $this->register(new MenuAdapter($this->state, $this->resolver, $this->paths), 4);
         $this->register(new BrandingAdapter($this->state, $this->resolver, $this->paths), 5);
+    }
+
+    /**
+     * Apêndice B.1.1: configuração das taxonomias versionadas — filtro
+     * 'cvsync/taxonomies', DEFAULT VAZIO (opt-in; o filtro adiciona, nunca
+     * remove garantias da v1). Item de valor simples → defaults derivados
+     * (dir `{taxonomy}s`, meta ['thumbnail_id']); associativo sobrescreve.
+     *
+     * @return array<string,array<string,mixed>>
+     */
+    public function taxonomyConfig(): array
+    {
+        $extra = apply_filters('cvsync/taxonomies', []);
+
+        $config = [];
+        foreach ((array) $extra as $key => $value) {
+            if (is_int($key)) {
+                $taxonomy = (string) $value;
+                $config[$taxonomy] = ['dir' => self::defaultDirectoryFor($taxonomy), 'meta' => ['thumbnail_id']];
+            } else {
+                $config[(string) $key] = array_merge(
+                    ['dir' => self::defaultDirectoryFor($key), 'meta' => ['thumbnail_id']],
+                    (array) $value
+                );
+            }
+        }
+
+        return $config;
     }
 
     /** Registro explícito (P4 registra o AttachmentAdapter no estágio 0). */
     public function register(EntityAdapter $adapter, int $stage): void
     {
         $postType = $adapter->postType();
-        if ($postType !== null) {
+        if ($postType !== null && $postType !== '') {
             $this->byPostType[$postType] = $adapter;
+        } elseif ($adapter instanceof TermAdapter) {
+            $this->byTaxonomy[$adapter->taxonomy()] = $adapter; // B.2.1: dispatch por taxonomia
         } else {
             $this->byKind[$adapter->kind()] = $adapter;
         }
         $this->stages[$stage][] = $adapter;
     }
 
-    public function forPostType(string $postType): ?EntityAdapter
+    /** Adapter da taxonomia versionada (B.1.1). */
+    public function forTaxonomy(string $taxonomy): ?TermAdapter
     {
-        return $this->byPostType[$postType] ?? null;
+        return $this->byTaxonomy[$taxonomy] ?? null;
+    }
+
+    /** @return list<string> Taxonomias versionadas (hooks de termos, B.2.4). */
+    public function versionedTaxonomies(): array
+    {
+        return array_keys($this->byTaxonomy);
     }
 
     public function forRef(EntityRef $ref): ?EntityAdapter
     {
         if ($ref->kind === 'post') {
             return $this->byPostType[(string) $ref->postType] ?? null;
+        }
+        if ($ref->kind === 'term') {
+            // B.2.1: entity_key='{taxonomy}:{slug}' — dispatch pela taxonomia.
+            $split = TermAdapter::splitKey($ref->key);
+
+            return $split !== null ? ($this->byTaxonomy[$split[0]] ?? null) : null;
         }
 
         return $this->byKind[$ref->kind] ?? null;
@@ -193,13 +278,18 @@ final class AdapterRegistry
     /** @return list<EntityAdapter> */
     public function all(): array
     {
-        return array_values([...$this->byPostType, ...$this->byKind]);
+        return array_values([...$this->byPostType, ...$this->byTaxonomy, ...$this->byKind]);
     }
 
     /**
-     * Adapters agrupados por estágio, ordem crescente (§A.5.7):
-     * 0=attachment (P4), 1=patterns/navigation, 2=templates/global-styles,
-     * 3=pages/CPTs, 4=menus, 5=branding.
+     * Adapters agrupados por estágio, ordem crescente (§A.5.7 + B.6.2):
+     * 0=attachment (P4) → TERMOS (B.6.2), 1=patterns/navigation,
+     * 2=templates/global-styles, 3=pages/CPTs, 4=menus, 5=branding.
+     *
+     * Dentro do estágio 0 a ordem interna é attachments ANTES de termos
+     * (partição estável — determinística independente da ordem de registro;
+     * a dependência term→attachment via thumbnail_id é não-estrutural, mas a
+     * ordem estável é de graça, B.6.2).
      *
      * @return array<int,list<EntityAdapter>>
      */
@@ -208,7 +298,24 @@ final class AdapterRegistry
         $stages = $this->stages;
         ksort($stages);
 
+        if (isset($stages[0])) {
+            usort($stages[0], static fn (EntityAdapter $a, EntityAdapter $b): int => self::stage0Rank($a) <=> self::stage0Rank($b));
+        }
+
         return $stages;
+    }
+
+    /** 0=attachment, 1=termo, 2= demais — ordem interna estável do estágio 0. */
+    private static function stage0Rank(EntityAdapter $adapter): int
+    {
+        if ($adapter->kind() === 'post' && $adapter->postType() === 'attachment') {
+            return 0;
+        }
+        if ($adapter->kind() === 'term') {
+            return 1;
+        }
+
+        return 2;
     }
 
     /**
@@ -251,6 +358,27 @@ final class AdapterRegistry
             if (!post_type_supports($postType, 'revisions')) {
                 throw new AdapterException(
                     sprintf('Post type "%s" sem suporte a revisions — o cvsync recusa-se a operar (§3.2).', $postType)
+                );
+            }
+        }
+
+        // Apêndice B.1.2 — deny-list normativa + taxonomias inexistentes/não-públicas.
+        foreach ($this->byTaxonomy as $taxonomy => $_adapter) {
+            if (in_array($taxonomy, self::DENIED_TAXONOMIES, true)) {
+                throw new AdapterException(
+                    sprintf(
+                        'Taxonomia "%s" é deny-listed do Apêndice B (já tem dono no cvsync ou é estrutural do core) — remova-a do filtro cvsync/taxonomies.',
+                        $taxonomy
+                    )
+                );
+            }
+            if (!taxonomy_exists($taxonomy)) {
+                throw new AdapterException(sprintf('Taxonomia versionada não registrada: %s', $taxonomy));
+            }
+            $object = get_taxonomy($taxonomy);
+            if ($object instanceof \WP_Taxonomy && empty($object->public)) {
+                throw new AdapterException(
+                    sprintf('Taxonomia "%s" não é pública (maquinaria interna) — fora do escopo do Apêndice B.', $taxonomy)
                 );
             }
         }

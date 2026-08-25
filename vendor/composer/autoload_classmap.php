@@ -16,6 +16,7 @@ return array(
     'CVSync\\Adapters\\PostAdapter' => $baseDir . '/includes/adapters/class-post-adapter.php',
     'CVSync\\Adapters\\ReferenceResolver' => $baseDir . '/includes/adapters/class-reference-resolver.php',
     'CVSync\\Adapters\\RejectedEntityException' => $baseDir . '/includes/adapters/class-adapter-exceptions.php',
+    'CVSync\\Adapters\\TermAdapter' => $baseDir . '/includes/adapters/class-term-adapter.php',
     'CVSync\\Adapters\\UuidOwnershipMismatchException' => $baseDir . '/includes/adapters/class-adapter-exceptions.php',
     'CVSync\\Admin\\AdminNotices' => $baseDir . '/includes/admin/class-admin-notices.php',
     'CVSync\\Admin\\BlameMetabox' => $baseDir . '/includes/admin/class-blame-metabox.php',

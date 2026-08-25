@@ -37,6 +37,22 @@ final class CommandStatus extends CommandBase
         $head        = Triggers::readHead(Triggers::repoRoot());
         $lastApplied = $this->c->state->lastAppliedHead();
 
+        // Termos por taxonomia versionada (Apêndice B.7.1 — informativo):
+        // total no banco × rastreados na state (kind=term, prefixo '{tax}:').
+        $termsByTaxonomy = [];
+        $trackedByPrefix = [];
+        foreach ($this->c->state->all('term') as $record) {
+            $prefix = explode(':', $record->ref->key, 2)[0];
+            $trackedByPrefix[$prefix] = ($trackedByPrefix[$prefix] ?? 0) + 1;
+        }
+        foreach ($this->versionedTaxonomies() as $taxonomy) {
+            $count = wp_count_terms(['taxonomy' => $taxonomy, 'hide_empty' => false]);
+            $termsByTaxonomy[$taxonomy] = [
+                'in_db'    => is_wp_error($count) ? null : (int) $count,
+                'tracked'  => $trackedByPrefix[$taxonomy] ?? 0,
+            ];
+        }
+
         $report = [
             'environment'       => Environment::current(),
             'policy'            => $policy,
@@ -51,6 +67,7 @@ final class CommandStatus extends CommandBase
             'last_applied_head' => $lastApplied,
             'head_diverged'     => null !== $head && null !== $lastApplied && $head !== $lastApplied,
             'state_by_status'   => $byStatus,
+            'terms_by_taxonomy' => $termsByTaxonomy,
             'snapshots'         => $this->c->snapshot->list(),
             'unresolved_conflicts' => count($this->c->conflicts->listUnresolved()),
         ];
@@ -63,6 +80,9 @@ final class CommandStatus extends CommandBase
             \WP_CLI::log(sprintf('HEAD: %s | último aplicado: %s%s', $head ?? '(sem .git)', $lastApplied ?? '(nenhum)', $report['head_diverged'] ? ' — DIVERGIDO (reconcile pendente)' : ''));
             foreach ($byStatus as $status => $n) {
                 \WP_CLI::log(sprintf('  state[%s] = %d', $status, $n));
+            }
+            foreach ($termsByTaxonomy as $taxonomy => $counts) {
+                \WP_CLI::log(sprintf('  terms[%s] = %s no banco, %d rastreado(s)', $taxonomy, null === $counts['in_db'] ? '?' : (string) $counts['in_db'], $counts['tracked']));
             }
             \WP_CLI::log(sprintf('Conflitos não resolvidos: %d | Snapshots: %d', $report['unresolved_conflicts'], count($report['snapshots'])));
         }

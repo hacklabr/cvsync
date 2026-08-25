@@ -45,6 +45,7 @@ final class CommandVerify extends CommandBase
             'ok' => 0, 'drift-db' => 0, 'drift-file' => 0, 'orphan' => 0,
             'pending_ref' => 0, 'conflict' => 0, 'missing_binary' => 0,
             'oversized-untracked' => 0, 'drift-external' => 0,
+            'orphaned-term' => 0, // Apêndice B.7.2 — informativo, NÃO soma em divergent
         ];
 
         foreach ($this->allRecords() as $record) {
@@ -71,10 +72,20 @@ final class CommandVerify extends CommandBase
             $items[] = ['entity' => $dangling->ref->toTupleString(), 'status' => 'orphan', 'detail' => 'state com db_id de post inexistente'];
         }
 
+        // Termos de taxonomia (Apêndice B.7.2) — apenas quando há taxonomias
+        // versionadas configuradas (default vazio, B.1.1).
+        $taxonomies = $this->versionedTaxonomies();
+        if ([] !== $taxonomies) {
+            $this->verifyTerms($taxonomies, $counts, $items);
+        }
+
         // Tree-hash por tipo (§11.1) — um valor comparável entre ambientes.
         $treeHashes = [];
         foreach ($this->c->adapters->versionedPostTypes() as $postType) {
             $treeHashes[$postType] = $this->c->state->treeHash('post', $postType);
+        }
+        if ([] !== $taxonomies) {
+            $treeHashes['term'] = $this->c->state->treeHash('term'); // B.7.2 — comparável entre ambientes
         }
 
         // Sonda PHP-off em uploads (§A.9.2) — somente CLI.
@@ -189,6 +200,90 @@ final class CommandVerify extends CommandBase
         }
 
         return ['ok', ''];
+    }
+
+    /**
+     * Seções de termos do verify (Apêndice B.7.2):
+     *  - untracked terms (anti-join por db_id=tt_id) → orphan (divergente);
+     *  - dangling term refs (state kind=term com db_id de termo sumiu) → orphan;
+     *  - órfãos informativos (termo versionado sem post versionado
+     *    referenciando) → 'orphaned-term', NUNCA auto-limpeza e NÃO soma em
+     *    divergent (espelho §A.4.3).
+     *
+     * Consome as APIs do P2 quando presentes (findUntrackedTerms/
+     * findDanglingTermRefs, B.7.2); na ausência, fallback local client-side
+     * equivalente (read-only, mesmas fontes) — sinalizado no relatório da
+     * implementação.
+     *
+     * @param list<string> $taxonomies
+     * @param array<string, int> $counts
+     * @param list<array<string, string>> $items
+     */
+    private function verifyTerms(array $taxonomies, array &$counts, array &$items): void
+    {
+        // 1. Untracked: termos no banco sem linha de state (P2, B.7.2 —
+        //    anti-join por tt_id, imune a rename em trânsito).
+        $untracked = $this->c->state->findUntrackedTerms($taxonomies);
+        foreach ($untracked as $term) {
+            $row    = (array) $term;
+            $counts['orphan']++;
+            $items[] = [
+                'entity' => sprintf('term::%s:%s', (string) ($row['taxonomy'] ?? ''), (string) ($row['slug'] ?? '')),
+                'status' => 'orphan',
+                'detail' => 'termo sem linha de state',
+            ];
+        }
+
+        // 2. Dangling: linhas kind=term com db_id (tt_id) de termo inexistente.
+        $dangling = $this->c->state->findDanglingTermRefs();
+        foreach ($dangling as $record) {
+            $counts['orphan']++;
+            $items[] = ['entity' => $record->ref->toTupleString(), 'status' => 'orphan', 'detail' => 'state com db_id de termo inexistente'];
+        }
+
+        // 3. Órfãos informativos: termo versionado vivo sem NENHUM post
+        //    versionado referenciando (heurística — nunca auto-limpeza).
+        foreach ($this->c->state->all('term') as $record) {
+            if (EntityStatus::Tombstone === $record->status) {
+                continue;
+            }
+            [$taxonomy, $slug] = explode(':', $record->ref->key, 2) + [1 => ''];
+            if ('' === $slug || ! taxonomy_exists($taxonomy)) {
+                continue;
+            }
+            $term = get_term_by('slug', $slug, $taxonomy);
+            if (! $term instanceof \WP_Term) {
+                continue; // dangling já coberto acima
+            }
+            if ($this->hasVersionedReferencer((int) $term->term_id, $taxonomy)) {
+                continue;
+            }
+            $counts['orphaned-term']++;
+            $items[] = [
+                'entity' => $record->ref->toTupleString(),
+                'status' => 'orphaned-term',
+                'detail' => 'termo versionado sem post versionado referenciando (informativo — B.7.2)',
+            ];
+        }
+    }
+
+    /** Heurística do órfão informativo: algum post versionado referencia o termo? */
+    private function hasVersionedReferencer(int $termId, string $taxonomy): bool
+    {
+        $objectIds = get_objects_in_term([$termId], $taxonomy);
+        if (is_wp_error($objectIds)) {
+            return true; // erro de leitura → conservador: não reporta órfão
+        }
+
+        $versioned = $this->c->adapters->versionedPostTypes();
+        foreach ($objectIds as $objectId) {
+            $post = get_post((int) $objectId);
+            if ($post instanceof \WP_Post && in_array($post->post_type, $versioned, true)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /** Attachment não rastreado acima do teto §A.5.4 → oversized-untracked. */

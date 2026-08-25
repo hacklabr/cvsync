@@ -38,12 +38,15 @@ final readonly class ApplyResult
      * @param list<PlaceholderToken> $unresolvedStructural   §6.2: bloqueia o write.
      * @param list<PlaceholderToken> $unresolvedNonStructural §6.2: write com literal + pending_ref.
      * @param list<string>           $pendingMeta            Meta keys puladas por placeholder não resolvido.
+     * @param list<string>           $pendingTermRefs        Apêndice B.6.3: termos versionados ausentes,
+     *        qualificados '{taxonomy}:{slug}' — omitidos do wp_set_object_terms, pendência não-estrutural.
      */
     public function __construct(
         public ?int $dbId,
         public array $unresolvedStructural = [],
         public array $unresolvedNonStructural = [],
         public array $pendingMeta = [],
+        public array $pendingTermRefs = [],
         public ?string $error = null,
     ) {
     }
@@ -57,7 +60,8 @@ final readonly class ApplyResult
     {
         return $this->unresolvedStructural !== []
             || $this->unresolvedNonStructural !== []
-            || $this->pendingMeta !== [];
+            || $this->pendingMeta !== []
+            || $this->pendingTermRefs !== [];
     }
 
     /** Slugs pendentes (refs[] plano — contrato do StateStore::pendingRefs). */

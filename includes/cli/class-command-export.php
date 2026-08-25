@@ -35,6 +35,7 @@ final class CommandExport extends CommandBase
         $this->warnInvalidConstants();
 
         $postType = isset($assocArgs['post-type']) ? (string) $assocArgs['post-type'] : null;
+        $taxonomy = isset($assocArgs['taxonomy']) ? (string) $assocArgs['taxonomy'] : null;
         $scope    = (string) ($assocArgs['scope'] ?? 'referenced');
         $batch    = max(1, (int) ($assocArgs['batch'] ?? 50));
         $out      = isset($assocArgs['out']) ? (string) $assocArgs['out'] : null;
@@ -43,6 +44,17 @@ final class CommandExport extends CommandBase
 
         if (! in_array($scope, ['referenced', 'all'], true)) {
             \WP_CLI::error('--scope deve ser referenced|all.');
+        }
+        if (null !== $taxonomy && null !== $postType) {
+            \WP_CLI::error('--taxonomy e --post-type são mutuamente exclusivos.');
+        }
+        $versionedTaxonomies = $this->versionedTaxonomies();
+        if (null !== $taxonomy && ! in_array($taxonomy, $versionedTaxonomies, true)) {
+            \WP_CLI::error(sprintf(
+                'Taxonomia "%s" não é versionada (filtro cvsync/taxonomies, Apêndice B.1.1). Versionadas: %s',
+                $taxonomy,
+                [] === $versionedTaxonomies ? '(nenhuma)' : implode(', ', $versionedTaxonomies)
+            ));
         }
 
         $exporter = $this->c->exporter;
@@ -65,6 +77,14 @@ final class CommandExport extends CommandBase
 
         if (null === $postType || in_array($postType, ['nav_menu', 'wp_global_styles', 'branding'], true)) {
             $this->exportNonPostEntities($batch, $exporter, $summary, $json);
+        }
+
+        // Termos de taxonomia (Apêndice B.7.1): --taxonomy=<tax> exporta UMA;
+        // sem --post-type nem --taxonomy, todas as versionadas.
+        $taxonomiesToExport = null !== $taxonomy ? [$taxonomy]
+            : (null === $postType ? $versionedTaxonomies : []);
+        foreach ($taxonomiesToExport as $taxonomyName) {
+            $this->exportTaxonomyTerms($taxonomyName, $batch, $summary, $json);
         }
 
         if ($json) {
@@ -103,6 +123,25 @@ final class CommandExport extends CommandBase
         }
 
         return in_array($only, $types, true) ? [$only] : [];
+    }
+
+    /**
+     * Export bulk de termos de UMA taxonomia versionada (B.7.1): mirror do
+     * --post-type — bulk com --batch, state incremental (idempotência por
+     * hash; interrompível e retomável).
+     *
+     * @param array<string, int> $summary
+     */
+    private function exportTaxonomyTerms(string $taxonomy, int $batch, array &$summary, bool $json): void
+    {
+        $entities = $this->enumerateVersionedTerms($taxonomy);
+
+        foreach (array_chunk($entities, $batch) as $chunk) {
+            foreach ($chunk as [$ref, $adapter]) {
+                $outcome = $this->termOutcome($this->exportTermOnce($ref, $adapter));
+                $this->tally($summary, $outcome, $json, $ref);
+            }
+        }
     }
 
     private function exportPostType(string $postType, int $batch, Exporter $exporter, array &$summary, bool $json): void

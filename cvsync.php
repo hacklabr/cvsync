@@ -322,6 +322,124 @@ function cvsync_activate(): void
 }
 
 // ---------------------------------------------------------------------------
+// Apêndice B — termos de taxonomia (componentes do CMS; wiring do bootstrap)
+// ---------------------------------------------------------------------------
+
+/**
+ * Registra os TermAdapters (Apêndice B) quando ainda não registrados pelo
+ * próprio registry do CMS (P3) — cobre o caso de o filtro 'cvsync/taxonomies'
+ * ser adicionado DEPOIS da construção do Container (tema em init tardio):
+ * o registry leu o filtro vazio e os adapters de termo não existem lá.
+ *
+ * Estágio 0 (B.6.2 — a ordem interna attachments→termos é garantida pelo
+ * byStage() do registry, que pós-ordena o estágio 0). Construção: UM adapter
+ * por taxonomia — assinatura real do CMS: (state, resolver, paths, taxonomy,
+ * dir, metaWhitelist), com defaults derivados idênticos aos do registry.
+ *
+ * Degradação graciosa: sem a classe, nada muda. Se o filtro optou por
+ * taxonomias e o componente falta, sinaliza via error_log (nunca silencioso).
+ */
+function cvsync_register_term_adapter(\CVSync\Cli\Container $container): void
+{
+    $adapterClass = \CVSync\Adapters\TermAdapter::class;
+
+    // Idempotente: registry do CMS já cobre TODAS as taxonomias do filtro?
+    $configured = cvsync_configured_taxonomies();
+    $registered = $container->adapters->versionedTaxonomies();
+    $missing    = array_diff($configured, $registered);
+    if ([] === $missing) {
+        return;
+    }
+
+    if (! class_exists($adapterClass)) {
+        if ([] !== $configured) {
+            error_log(sprintf(
+                'cvsync: filtro cvsync/taxonomies configurado (%d taxonomia(s)) mas %s ausente — termos NAO serao versionados (Apendice B).',
+                count($configured),
+                $adapterClass
+            ));
+        }
+
+        return;
+    }
+
+    $whitelistDefault = ['thumbnail_id'];
+    foreach ($missing as $taxonomy) {
+        try {
+            $container->adapters->register(
+                new $adapterClass(
+                    $container->state,
+                    $container->resolver,
+                    $container->paths,
+                    $taxonomy,
+                    str_replace(['_', '.'], '-', $taxonomy) . 's', // 🟡B4: dir default sanitizado (idem registry)
+                    $whitelistDefault
+                ),
+                0
+            );
+        } catch (\Throwable $e) {
+            error_log(sprintf(
+                'cvsync: falha ao registrar %s para "%s" (%s) — prosseguindo sem esta taxonomia.',
+                $adapterClass,
+                $taxonomy,
+                $e->getMessage()
+            ));
+        }
+    }
+}
+
+/**
+ * Taxonomias do filtro 'cvsync/taxonomies' (default VAZIO, B.1.1) — leitura
+ * única, mesmos defaults derivados do AdapterRegistry::taxonomyConfig().
+ *
+ * @return list<string>
+ */
+function cvsync_configured_taxonomies(): array
+{
+    $configured = apply_filters('cvsync/taxonomies', []);
+    $taxonomies = [];
+    foreach ((array) $configured as $key => $value) {
+        $taxonomies[] = is_int($key) ? (string) $value : (string) $key;
+    }
+
+    return array_values(array_unique($taxonomies));
+}
+
+/**
+ * Hooks do ciclo de vida de termos (B.2.4 — created/edited/pre_delete/
+ * delete_term + term meta): VIVEM no \CVSync\Hooks do P3 (register() inclui a
+ * família desde a implementação do CMS — mesmo gate export_auto, mesmos
+ * guards ImportGuard/taxonomy/_cvsync_*). Nenhuma classe TermHooks separada
+ * existe ou é necessária; esta função permanece como ponto de extensão caso
+ * um componente dedicado surja no futuro (probe + wiring pelo precedente).
+ */
+function cvsync_register_term_hooks(\CVSync\Cli\Container $container): void
+{
+    foreach ([\CVSync\TermHooks::class, \CVSync\Adapters\TermHooks::class] as $candidate) {
+        if (class_exists($candidate)) {
+            try {
+                ( new $candidate(
+                    $container->adapters,
+                    $container->state,
+                    $container->exporter,
+                    $container->guard
+                ) )->register();
+            } catch (\Throwable $e) {
+                error_log(sprintf(
+                    'cvsync: falha ao registrar %s (%s) — export automatico de termos desativado.',
+                    $candidate,
+                    $e->getMessage()
+                ));
+            }
+
+            return;
+        }
+    }
+
+    // B.2.4 já coberto pelo \CVSync\Hooks::register() (wiring do bloco gated).
+}
+
+// ---------------------------------------------------------------------------
 // Wiring (init@1: após plugins E tema — filtros cvsync/post_types do tema já
 // registrados; Hooks adia os save_post_* para init@1000 internamente)
 // ---------------------------------------------------------------------------
@@ -334,9 +452,9 @@ add_action('init', 'cvsync_bootstrap', 1);
  *  - WP-CLI: Cli::register() (contrato §8.3) — o próprio P5 re-valida;
  *  - Triggers (check passivo HEAD-hash, §8.2): sempre registrado; o gate de
  *    apply_auto é interno (prod nunca agenda reconcile);
- *  - Hooks de EXPORT automático (P3) + MediaHooks (P4): SOMENTE quando
- *    Environment::policy()['export_auto'] — em prod ficam OFF (export manual
- *    via CLI é livre, read-only no banco);
+ *  - Hooks de EXPORT automático (P3) + MediaHooks (P4) + TermHooks
+ *    (Apêndice B): SOMENTE quando Environment::policy()['export_auto'] — em
+ *    prod ficam OFF (export manual via CLI é livre, read-only no banco);
  *  - Admin: notices (Environment warnings §10.1 + AdminNotices), metabox de
  *    blame (§11.1) e tela em Ferramentas (§10 capabilities).
  *
@@ -350,6 +468,11 @@ function cvsync_bootstrap(): void
     }
 
     $container = \CVSync\Cli\Cli::container();
+
+    // Apêndice B — TermAdapter no estágio 0 (quando o componente do CMS
+    // existe). Fora do gate export_auto: o adapter serve CLI apply/export/
+    // verify/bootstrap em QUALQUER ambiente (prod incluso).
+    cvsync_register_term_adapter($container);
 
     // Check passivo (§8.2) — gate de apply_auto interno ao Triggers.
     \CVSync\Cli\Cli::triggers()->register();
@@ -375,6 +498,9 @@ function cvsync_bootstrap(): void
                 $container->guard
             ) )->register();
         }
+
+        // Apêndice B — hooks de termos (B.2.4), mesmo gate dos demais.
+        cvsync_register_term_hooks($container);
     }
 
     // Superfícies admin (§10 capabilities).
