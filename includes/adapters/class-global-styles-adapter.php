@@ -85,7 +85,26 @@ final class GlobalStylesAdapter extends AbstractPostAdapter
 
     public function readCanonical(EntityRef $ref): ?CanonicalDocument
     {
-        $post = $this->resolvePost($ref);
+        // BUG 2(c) — wp_global_styles é UM POST POR USUÁRIO por tema no core
+        // (WP_Theme_JSON_Resolver::get_user_data_global_styles cria o da
+        // sessão no primeiro save do Site Editor). Com N posts do stylesheet
+        // no banco, exportar N = N arquivos no MESMO path + N identidades na
+        // state alegando o tema. Canônico = o que o WP resolve para o
+        // usuário técnico do export (fallback: último modificado publish);
+        // warning sobre os demais (§4.5 "um arquivo por tema" — NUNCA dois
+        // arquivos no mesmo path).
+        $post = $this->resolvePost($ref) ?? $this->canonicalStylesheetPost($this->docStylesheet($ref));
+        $alternates = $this->stylesheetPosts($this->docStylesheet($ref));
+        foreach ($alternates as $alt) {
+            if ($post === null || $alt->ID !== $post->ID) {
+                error_log(sprintf(
+                    '[cvsync] wp_global_styles: post %d do stylesheet "%s" fora do versionamento (um post por usuário — o canônico é o %s); delete-o ou reconcilie manualmente (§4.5).',
+                    $alt->ID,
+                    $this->docStylesheet($ref),
+                    $post !== null ? $post->ID : '(nenhum)'
+                ));
+            }
+        }
         if (!$post instanceof \WP_Post || $post->post_status !== 'publish') {
             return null;
         }
@@ -189,14 +208,53 @@ final class GlobalStylesAdapter extends AbstractPostAdapter
 
     private function findByStylesheet(string $stylesheet): ?\WP_Post
     {
+        // BUG 2(c): o apply adota o post CANÔNICO do stylesheet (mesma regra
+        // do export) — nunca o primeiro que aparecer.
+        return $this->canonicalStylesheetPost($stylesheet);
+    }
+
+    /** Stylesheet do DOCUMENTO sob export/import (o tema pode ter trocado). */
+    private function docStylesheet(\CVSync\Engine\EntityRef $ref): string
+    {
+        // ref não carrega o stylesheet; derive-se do post rastreado, senão do ativo.
+        $row = null;
+        try {
+            $row = $this->state->get($ref);
+        } catch (\Throwable) {
+        }
+        if ($row !== null && $row->dbId !== null) {
+            $post = get_post($row->dbId);
+            if ($post instanceof \WP_Post && str_starts_with((string) $post->post_name, 'wp-global-styles-')) {
+                return substr((string) $post->post_name, strlen('wp-global-styles-'));
+            }
+        }
+
+        return get_stylesheet();
+    }
+
+    /**
+     * Posts wp_global_styles do stylesheet dado (um por usuário — core).
+     *
+     * @return list<\WP_Post>
+     */
+    private function stylesheetPosts(string $stylesheet): array
+    {
         $found = get_posts([
             'post_type'      => $this->postType(),
-            'post_status'    => 'publish',
+            'post_status'    => ['publish', 'draft'],
             'name'           => 'wp-global-styles-' . $stylesheet,
-            'posts_per_page' => 1,
+            'posts_per_page' => -1,
             'no_found_rows'  => true,
+            'orderby'        => 'modified',
+            'order'          => 'DESC',
         ]);
 
-        return $found[0] instanceof \WP_Post ? $found[0] : null;
+        return array_values(array_filter($found, static fn ($p): bool => $p instanceof \WP_Post));
+    }
+
+    /** O post canônico do stylesheet (último modificado — o que o WP resolve). */
+    private function canonicalStylesheetPost(string $stylesheet): ?\WP_Post
+    {
+        return $this->stylesheetPosts($stylesheet)[0] ?? null;
     }
 }

@@ -141,6 +141,30 @@ abstract class CommandBase
     // ------------------------------------------------------------------
 
     /**
+     * Gate de migration pendente (§5.9) com saída de destaque (fix ibiomas):
+     * a recusa é a PRIMEIRA linha da saída, como ERRO (não warning), com a
+     * ação prescritiva — nunca precedida de resumo "Applied 0 … failed 1",
+     * que o dev lê como "apply não faz nada". Exit code dedicado 3.
+     *
+     * Chamado na primeira linha de apply/plan/export/bootstrap (comandos que
+     * o gate bloqueia). O gate interno do ApplyRunner permanece como
+     * defense-in-depth para o caminho passivo (sem WP_CLI).
+     */
+    protected function refuseIfMigrationPending(): void
+    {
+        if (! \CVSync\Storage\Schema::needsMigration()) {
+            return;
+        }
+
+        \WP_CLI::error(sprintf(
+            "cvsync: operação RECUSADA — migration de schema pendente (fail-closed §5.9): schema v%d instalado, v%d requerido (Apêndice B).\n" .
+            "Ação: reative o plugin (wp plugin deactivate cvsync && wp plugin activate cvsync) ou rode a migration no pipeline.",
+            \CVSync\Storage\Schema::installedVersion(),
+            \CVSync\Storage\Schema::SCHEMA_VERSION
+        ), 3);
+    }
+
+    /**
      * Taxonomias versionadas: filtro `cvsync/taxonomies` (default vazio, B.1.1).
      * Consome `AdapterRegistry::versionedTaxonomies()` quando o CMS o expuser;
      * senão lê o filtro diretamente (a config é do ambiente, não de classe).

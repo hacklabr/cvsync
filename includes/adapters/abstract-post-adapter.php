@@ -313,6 +313,20 @@ abstract class AbstractPostAdapter implements EntityAdapter
         }
 
         $post = $this->resolvePost($doc->ref);
+        $this->currentDocUuid = $doc->uuid();
+
+        $adoptedLegacyRow = null;
+        if (!$post instanceof \WP_Post) {
+            // BUG 1: adoção por slug (§4.2.4 no apply) — post local sem uuid
+            // com o mesmo slug do documento → adotar, nunca duplicar.
+            $adoption = $this->findAdoptableBySlug($doc->uuid(), $doc->slug());
+            if ($adoption !== null) {
+                [$post, $adoptedLegacyRow] = $adoption;
+                // Claim da identidade do repo no post adotado (grava ANTES do
+                // update para hooks/anti-sequestro verem o dono certo).
+                $this->ensureUuid((int) $post->ID, $doc->uuid());
+            }
+        }
 
         $postarr = [
             'post_type'    => $this->postType(),
@@ -326,7 +340,7 @@ abstract class AbstractPostAdapter implements EntityAdapter
 
         if ($post instanceof \WP_Post) {
             $postarr['ID'] = $post->ID;
-            $postId = wp_update_post(wp_slash($postarr), true);
+            $postId = wp_update_post(wp_slash($postarr), true); // revision preserva o conteúdo local divergente (§10.3)
         } else {
             $postId = wp_insert_post(wp_slash($postarr), true);
         }
@@ -337,6 +351,18 @@ abstract class AbstractPostAdapter implements EntityAdapter
             );
         }
         $postId = (int) $postId;
+
+        // BUG 2(a): linha legada com OUTRO uuid apontando este db_id →
+        // invalidar (a identidade do repo é a única dona a partir de agora).
+        if ($adoptedLegacyRow instanceof \CVSync\Storage\StateRecord) {
+            try {
+                $this->state->deleteRow($adoptedLegacyRow->ref);
+            } catch (\Throwable $e) {
+                // Fallthrough: o upsert da linha nova abaixo prevalece; duplicata
+                // residual é reportada ruidosamente pelo findByDbId duplicado-check.
+                error_log(sprintf('[cvsync] adoção: falha ao invalidar linha legada %s: %s', $adoptedLegacyRow->ref->toTupleString(), $e->getMessage()));
+            }
+        }
 
         $pendingTermRefs = $this->applyTerms($postId, $doc->terms()); // B.6.3
         $pendingMeta = $this->applyMeta($postId, $doc);
@@ -402,6 +428,82 @@ abstract class AbstractPostAdapter implements EntityAdapter
 
         return $post instanceof \WP_Post && $post->post_type === $this->postType() ? $post : null;
     }
+
+    /**
+     * BUG 1 (dogfood ibiomas): ADOÇÃO POR SLUG no apply (§4.2.4 vale para
+     * apply, não só bootstrap — cláusula candidata a errata). Bancos de devs
+     * nascem independentes: o colega commitou a entidade (uuid novo) e o
+     * banco local tem o post COM O MESMO SLUG sem uuid cvsync. Sem adoção,
+     * o insert colide e o WP gera 'slug-2' → export auto grava arquivo novo
+     * com o MESMO uuid → anti-sequestro pega o sintoma, não a causa.
+     *
+     * Regra: post existente (post_type, slug) SEM '_cvsync_uuid' (posts COM
+     * uuid de OUTRA entidade não são tocados aqui — o mismatch segue o fluxo
+     * §6.3). Achou → o apply adota: grava o uuid do repo no post, claim da
+     * linha de state, e aplica o conteúdo via wp_update_post (revision — a
+     * versão local divergente fica preservada na revision imediatamente
+     * anterior: a semântica de merge do §10.3 — o PR foi revisado por
+     * humanos, o não-commitado cai para revision).
+     *
+     * @param string $repoUuid uuid do documento (identidade vencedora).
+     * @param string $slug     slug do documento.
+     * @return array{0: \WP_Post, 1: \CVSync\Storage\StateRecord|null}|null
+     *         [post adotável, linha de state legada que aponta o db_id].
+     */
+    protected function findAdoptableBySlug(string $repoUuid, string $slug): ?array
+    {
+        $statuses = $this->postType() === 'attachment'
+            ? ['inherit'] // E3/§A.2.3b
+            : $this->statuses();
+
+        $found = get_posts([
+            'post_type'        => $this->postType(),
+            'name'             => $slug,
+            'post_status'      => $statuses,
+            'posts_per_page'   => 5, // raro; pega eventuais aliases p/ diagnóstico
+            'no_found_rows'    => true,
+            'suppress_filters' => true,
+        ]);
+
+        foreach ($found as $post) {
+            if (!$post instanceof \WP_Post) {
+                continue;
+            }
+            $existingUuid = (string) get_post_meta((int) $post->ID, '_cvsync_uuid', true);
+            if ($existingUuid === $repoUuid) {
+                return [$post, $this->legacyRowForDbId((int) $post->ID)]; // já nosso — só claim
+            }
+            if ($existingUuid !== '') {
+                continue; // pertence a OUTRA entidade versionada — §6.3 cuida
+            }
+
+            return [$post, $this->legacyRowForDbId((int) $post->ID)];
+        }
+
+        return null;
+    }
+
+    /**
+     * BUG 2: linha de state legada (outro uuid) apontando o MESMO db_id — as
+     * duas identidades alegam o post e o idx_db fica ambíguo. Retorna a
+     * primeira para o caller invalidar (deleteRow/tombstone) na adoção/claim.
+     */
+    protected function legacyRowForDbId(int $dbId): ?\CVSync\Storage\StateRecord
+    {
+        foreach ($this->state->all('post') as $row) {
+            if ($row->ref->postType === $this->postType()
+                && $row->dbId === $dbId
+                && $row->ref->key !== ($this->currentDocUuid ?? '')
+            ) {
+                return $row;
+            }
+        }
+
+        return null;
+    }
+
+    /** uuid do documento em apply() — contexto para legacyRowForDbId. */
+    protected string $currentDocUuid = '';
 
     /** Parent canônico: SLUG do pai (nunca ID), null quando sem pai (§4.2). */
     protected function canonicalParent(\WP_Post $post): ?string

@@ -474,6 +474,14 @@ final class Hooks
         }
 
         $uuid = $adapter->ensureUuid((int) $post->ID);
+        if ($uuid === '') {
+            // BUG 4 (dogfood): adapter sem portador de uuid (ex.: branding-like)
+            // — identidade incompleta NUNCA fatala (EntityRef lança com key
+            // vazia); skip com log, o verify reporta a entidade untracked.
+            error_log(sprintf('[cvsync] dirty-mark: post %d (%s) sem uuid — ignorado.', $post->ID, $post->post_type));
+
+            return;
+        }
         $ref = EntityRef::post($post->post_type, $uuid);
 
         $this->state->upsert($ref, [

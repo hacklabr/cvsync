@@ -75,8 +75,17 @@ final class CommandStatus extends CommandBase
         if ($this->isJson($assocArgs)) {
             $this->jsonLine($report);
         } else {
-            \WP_CLI::log(sprintf('Ambiente: %s (apply_auto: %s, export_auto: %s, conflict_winner: %s, deploy_gate: %s, deleções: %s)', $report['environment'], $policy['apply_auto'] ? 'on' : 'OFF', $policy['export_auto'] ? 'on' : 'OFF', $report['conflict_winner'], $report['deploy_gate'], $policy['deletion']));
+            // Schema no TOPO com destaque quando pendente (fix ibiomas: na
+            // posição antiga — linha 2, após "Ambiente:" — era fácil ignorar).
+            if ($report['migration_pending']) {
+                \WP_CLI::log(sprintf(
+                    '*** MIGRATION PENDENTE: schema v%d instalado, v%d requerido — apply/plan/export/bootstrap RECUSADOS (exit 3). Rode a migration: reative o plugin (wp plugin deactivate cvsync && wp plugin activate cvsync) ou o passo do pipeline. ***',
+                    $report['schema_version'],
+                    $report['schema_required']
+                ));
+            }
             \WP_CLI::log(sprintf('Schema: v%d (requerido v%d)%s', $report['schema_version'], $report['schema_required'], $report['migration_pending'] ? ' — MIGRATION PENDENTE' : ''));
+            \WP_CLI::log(sprintf('Ambiente: %s (apply_auto: %s, export_auto: %s, conflict_winner: %s, deploy_gate: %s, deleções: %s)', $report['environment'], $policy['apply_auto'] ? 'on' : 'OFF', $policy['export_auto'] ? 'on' : 'OFF', $report['conflict_winner'], $report['deploy_gate'], $policy['deletion']));
             \WP_CLI::log(sprintf('HEAD: %s | último aplicado: %s%s', $head ?? '(sem .git)', $lastApplied ?? '(nenhum)', $report['head_diverged'] ? ' — DIVERGIDO (reconcile pendente)' : ''));
             foreach ($byStatus as $status => $n) {
                 \WP_CLI::log(sprintf('  state[%s] = %d', $status, $n));

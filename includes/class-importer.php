@@ -188,6 +188,11 @@ final class Importer
 
         $this->guard->run(function () use ($queue, $termQueue, &$fixed): void {
             foreach ($queue as [$searchType, $uuid, $parentSlug, $entityType]) {
+                // BUG 4: identidade incompleta na fila — skip com log, nunca fatal.
+                if ($uuid === '' || $entityType === '' || $parentSlug === '') {
+                    error_log('[cvsync] fixup: entrada com identidade incompleta — ignorada.');
+                    continue;
+                }
                 $parentId = $this->resolver->postIdForSlug($searchType, $parentSlug);
                 if ($parentId === null) {
                     continue; // permanece para o próximo lote
@@ -202,6 +207,15 @@ final class Importer
                 }
                 wp_update_post(wp_slash(['ID' => $post->ID, 'post_parent' => $parentId]), true);
                 $fixed++;
+
+                // BUG 3 (dogfood ibiomas): 'parent' ENTRA no hash canônico
+                // (posts e sidecars) — o fixup muda o payload DEPOIS do
+                // recordSync do estágio 0/3 → recompute diverge → "db
+                // diverged" em todo verify/apply seguinte (e um apply puro
+                // faria db vencer e REESCREVER o arquivo do colega — o pior
+                // modo). Regrava o hash refletindo o estado PÓS-fixup
+                // (idempotente: recompute sobre o post já corrigido).
+                $this->resyncRecordedHash($record);
             }
 
             // Apêndice B.6.4 — parent de TERMOS: resolve por (taxonomy, slug),
@@ -221,6 +235,9 @@ final class Importer
                 }
                 wp_update_term((int) $term->term_id, $taxonomy, ['parent' => (int) $parent->term_id]);
                 $fixed++;
+
+                // BUG 3 (análogo para termos — B.6.4): parent entra no hash.
+                $this->resyncRecordedHash($record);
             }
         });
 
@@ -238,10 +255,16 @@ final class Importer
 
         // Registra parent pendente para o fixup de fim de lote. Attachments
         // têm pai de QUALQUER tipo versionado (§A.5.2.8) — busca cross-type.
+        // BUG 4: identidade incompleta (uuid vazio — ex.: doc sem uuid em
+        // caminho legado) NUNCA fatala o lote no EntityRef — skip com log.
         $parentSlug = $doc->frontmatter['parent'] ?? null;
         if (is_string($parentSlug) && $parentSlug !== '' && $adapter->postType() !== null) {
-            $searchType = $adapter->postType() === 'attachment' ? 'any' : $adapter->postType();
-            $this->pendingParents[] = [$searchType, $doc->uuid(), $parentSlug, $adapter->postType()];
+            if ($doc->uuid() === '') {
+                error_log(sprintf('[cvsync] fixup: doc %s sem uuid — parent pendente ignorado.', $doc->ref->toTupleString()));
+            } else {
+                $searchType = $adapter->postType() === 'attachment' ? 'any' : $adapter->postType();
+                $this->pendingParents[] = [$searchType, $doc->uuid(), $parentSlug, $adapter->postType()];
+            }
         }
 
         // Apêndice B.6.4 — parent de termo para o fixup de fim de lote.
@@ -275,6 +298,13 @@ final class Importer
 
                     if ($apply->dbId !== null) {
                         $this->state->upsert($doc->ref, ['db_id' => $apply->dbId]);
+                        // BUG 2(b): duas identidades alegando o mesmo db_id =
+                        // idx_db ambíguo (dogfood: 2× wp_global_styles:uuid →
+                        // db_id 7). Detecta e reclama RUIDOSAMENTE — nunca
+                        // retorna ambíguo em silêncio. (A invalidação da linha
+                        // legada acontece na adoção/claim do adapter; isto é a
+                        // rede de segurança para linhas pré-existentes.)
+                        $this->warnDuplicateDbIds($doc->ref, (int) $apply->dbId);
                     }
 
                     $this->state->recordSync(
@@ -343,6 +373,61 @@ final class Importer
         }
 
         return $payload;
+    }
+
+    /**
+     * BUG 2(b): reclama ruidosamente quando 2+ linhas de state (kind post,
+     * mesmo post_type) apontam o mesmo db_id — idx_db ambíguo. O plano do
+     * ApplyRunner reporta "sem arquivo" para a identidade perdedora do
+     * get_row arbitrário; a ambiguidade precisa ser visível.
+     */
+    private function warnDuplicateDbIds(\CVSync\Engine\EntityRef $ref, int $dbId): void
+    {
+        foreach ($this->state->all('post') as $row) {
+            if ($row->dbId === $dbId
+                && $row->ref->postType === $ref->postType
+                && !$row->ref->equals($ref)
+            ) {
+                error_log(sprintf(
+                    '[cvsync] state ambíguo: %s e %s apontam db_id=%d — resolva removendo a identidade órfã (wp sync rebase ou delete manual da linha).',
+                    $ref->toTupleString(),
+                    $row->ref->toTupleString(),
+                    $dbId
+                ));
+            }
+        }
+    }
+
+    /**
+     * BUG 3: regrava o hash canônico de uma entidade cujo banco foi mutado
+     * pós-recordSync pelo parent-fixup (estado final = o que o hash deve
+     * refletir). Idempotente: recompute sobre o estado já corrigido.
+     */
+    private function resyncRecordedHash(\CVSync\Storage\StateRecord $record): void
+    {
+        $adapter = $this->adapters->forRef($record->ref);
+        if ($adapter === null) {
+            return;
+        }
+        try {
+            $doc = $adapter->readCanonical($record->ref);
+            if ($doc === null) {
+                return; // entidade não-exportável agora (ex.: status transitório) — próximo ciclo
+            }
+            $hash = \CVSync\Engine\Hasher::hashDocument($doc, $adapter->keyOrder());
+            $path = $adapter->locateFile($record->ref);
+            $this->state->recordSync(
+                $record->ref,
+                \CVSync\Storage\SyncDirection::FileToDb,
+                self::hashHex($hash),
+                null,
+                $path !== null ? $this->paths->mtime($path) : null
+            );
+        } catch (\Throwable $e) {
+            // Nunca derruba o lote por causa do resync; o próximo verify
+            // reporta a divergência residual.
+            error_log(sprintf('[cvsync] resync pós-fixup de %s falhou: %s', $record->ref->toTupleString(), $e->getMessage()));
+        }
     }
 
     /**

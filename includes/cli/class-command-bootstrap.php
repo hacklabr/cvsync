@@ -45,11 +45,7 @@ final class CommandBootstrap extends CommandBase
             \WP_CLI::error($refusal);
         }
 
-        try {
-            \CVSync\Storage\Schema::assertNoPendingMigration();
-        } catch (\Throwable $e) {
-            \WP_CLI::error($e->getMessage());
-        }
+        $this->refuseIfMigrationPending(); // primeira linha, ERRO exit 3 (fix ibiomas)
 
         $summary = 'files' === $from ? $this->fromFiles() : $this->fromDb();
 

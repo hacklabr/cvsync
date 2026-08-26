@@ -100,22 +100,57 @@ final class StateStore
     /**
      * Resolve post salvo → linha de state (os hooks de escrita recebem ID).
      * Via idx_db.
+     *
+     * Detecção de duplicata (fix dogfood ibiomas, bug 2): se mais de UMA linha
+     * não-tombstone alega o mesmo (kind='post', post_type, db_id), o idx_db
+     * está ambíguo — devolver "a primeira" é bug de estado silenciado, e
+     * devolver null convidaria o caller a criar mais uma linha. Decisão
+     * (estilo de erro do P2: exceções tipadas na fronteira, nunca silêncio):
+     * **StorageException ruidoso** com as identidades envolvidas e a saída de
+     * resolução. Tombstones NÃO contam (a invalidação do bug 2 gera tombstone
+     * legado proposital; row morta não ambigua idx_db).
+     *
+     * @throws StorageException Duplicata não-tombstone para o mesmo db_id.
      */
     public function findByDbId(string $postType, int $dbId): ?StateRecord
     {
-        $row = $this->db->get_row(
+        $rows = $this->db->get_results(
             $this->db->prepare(
-                'SELECT * FROM %i WHERE entity_kind = %s AND post_type = %s AND db_id = %d',
+                'SELECT * FROM %i WHERE entity_kind = %s AND post_type = %s AND db_id = %d AND status != %s ORDER BY id ASC',
                 $this->table(),
                 'post',
                 $postType,
-                $dbId
+                $dbId,
+                EntityStatus::Tombstone->value
             ),
             ARRAY_A
         );
         $this->assertNoError('state.findByDbId');
 
-        return null === $row ? null : StateRecord::fromRow($row);
+        $rows = $rows ?: [];
+
+        if (count($rows) > 1) {
+            $keys = implode(
+                ', ',
+                array_map(
+                    static fn (array $r): string => (string) $r['entity_key'],
+                    $rows
+                )
+            );
+
+            throw new StorageException(
+                sprintf(
+                    'state.findByDbId: %d linhas não-tombstone alegam db_id=%d (post_type=%s): [%s]. ' .
+                    'Ambiguidade de idx_db é bug de estado — resolva com wp sync resolve/conflicts ou removendo a linha órfã antes de prosseguir.',
+                    count($rows),
+                    $dbId,
+                    $postType,
+                    $keys
+                )
+            );
+        }
+
+        return [] === $rows ? null : StateRecord::fromRow($rows[0]);
     }
 
     /**

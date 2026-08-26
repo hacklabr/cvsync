@@ -7,8 +7,11 @@
  *
  * Exit codes (§8.3):
  *  0 — sucesso (inclui conflitos auto-resolvidos: NUNCA sobem exit code);
- *  1 — failed > 0 (falha o deploy) ou recusa de ambiente/lock/migration;
- *  2 — CVSYNC_DEPLOY_GATE=halt + conflito auto-resolvido no lote.
+ *  1 — failed > 0 (falha o deploy) ou recusa de ambiente/lock;
+ *  2 — CVSYNC_DEPLOY_GATE=halt + conflito auto-resolvido no lote;
+ *  3 — migration de schema pendente (fail-closed §5.9): recusa com destaque
+ *       e ação prescritiva, SEM resumo — "reative o plugin ou rode a
+ *       migration no pipeline".
  *
  * skipped-locked (§8.4) conta como failed para o exit code (a entidade
  * permanece divergente no state — retry natural no próximo checkpoint); em
@@ -33,6 +36,11 @@ final class CommandApply extends CommandBase
 {
     public function __invoke(array $args, array $assocArgs): void
     {
+        // Migração pendente = PRIMEIRA linha da saída, como ERRO (exit 3),
+        // antes de qualquer warning/resumo (fix ibiomas: o resumo "failed 1"
+        // no fim era lido como "apply não faz nada").
+        $this->refuseIfMigrationPending();
+
         $this->warnInvalidConstants();
 
         $dryRun     = (bool) ($assocArgs['dry-run'] ?? false);
@@ -61,6 +69,12 @@ final class CommandApply extends CommandBase
         );
 
         $report = (new ApplyRunner($this->c))->run($ctx, $forceDel);
+
+        // Corrida mid-run (migration pendeu entre o gate e o lote): mesma
+        // recusa com destaque, exit 3 — SEM resumo antes.
+        if (is_array($report['migration_pending'] ?? false)) {
+            $this->refuseIfMigrationPending(); // needsMigration() agora true → erro exit 3
+        }
 
         if ($json) {
             $this->jsonLine($report);

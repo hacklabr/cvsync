@@ -32,6 +32,8 @@ final class CommandExport extends CommandBase
 {
     public function __invoke(array $args, array $assocArgs): void
     {
+        $this->refuseIfMigrationPending(); // primeira linha, ERRO exit 3 (fix ibiomas)
+
         $this->warnInvalidConstants();
 
         $postType = isset($assocArgs['post-type']) ? (string) $assocArgs['post-type'] : null;

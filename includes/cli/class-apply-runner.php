@@ -99,6 +99,7 @@ final class ApplyRunner
             'items'              => [],
             'errors'             => [],
             'config_warnings'    => [],
+            'migration_pending'  => false,
         ];
 
         // 0. Divergência cvsync.json × CVSYNC_* (§A.13.10) — warning, NUNCA falha.
@@ -109,9 +110,16 @@ final class ApplyRunner
         }
 
         // 1. Gate de migration (§5.9) — fail-fast, antes de qualquer lock.
+        //     Defense-in-depth: os comandos CLI recusam com destaque e exit 3
+        //     (CommandBase::refuseIfMigrationPending); este gate cobre o
+        //     caminho passivo (sem WP_CLI) e a corrida mid-run.
         try {
             Schema::assertNoPendingMigration();
         } catch (\Throwable $e) {
+            $report['migration_pending'] = [
+                'installed' => Schema::installedVersion(),
+                'required'  => Schema::SCHEMA_VERSION,
+            ];
             $report['errors'][] = $e->getMessage();
             $report['failed']++;
 

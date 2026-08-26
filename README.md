@@ -156,10 +156,10 @@ Convenções gerais (de `CommandBase`, aplicam-se a quase todos):
 
 | Comando | O que faz | Mutação? | Exit codes |
 |---|---|---|---|
-| `apply` | Reconcilia arquivos → banco | sim | 0 ok · 1 falha/recusa · 2 deploy_gate=halt com conflito |
-| `plan` | Dry-run do plano completo | não | 0 ok · 1 erro de plano |
-| `export` | Exporta banco → arquivos (bulk/filtros) | não (banco) | 0 ok · 1 erro ou diff no `--check` |
-| `bootstrap` | Seed inicial da state table | sim | 0 ok · 1 falhas |
+| `apply` | Reconcilia arquivos → banco | sim | 0 ok · 1 falha/recusa · 2 deploy_gate=halt com conflito · **3 migration pendente** |
+| `plan` | Dry-run do plano completo | não | 0 ok · 1 erro de plano · **3 migration pendente** |
+| `export` | Exporta banco → arquivos (bulk/filtros) | não (banco) | 0 ok · 1 erro ou diff no `--check` · **3 migration pendente** |
+| `bootstrap` | Seed inicial da state table | sim | 0 ok · 1 falhas · **3 migration pendente** |
 | `verify` | Recalcula hashes dos dois lados × state | não | 0 convergente · ≠0 divergência |
 | `status` | Visão geral do sync no ambiente | não | 0 sempre |
 | `log` | Audit trail recente | não | 0 sempre |
@@ -192,8 +192,10 @@ code; o retry é natural no próximo checkpoint).
 | `--format=json` | Saída estruturada | off |
 
 Exit codes: `0` sucesso (conflitos auto-resolvidos **não** sobem exit code) ·
-`1` houve falhas ou recusa de ambiente/lock/migration · `2`
-`CVSYNC_DEPLOY_GATE=halt` e houve conflito auto-resolvido no lote.
+`1` houve falhas ou recusa de ambiente/lock · `2`
+`CVSYNC_DEPLOY_GATE=halt` e houve conflito auto-resolvido no lote · `3`
+migration de schema pendente (fail-closed §5.9 — recusa imediata com ação
+prescritiva, sem resumo; reative o plugin ou rode a migration no pipeline).
 
 ```bash
 docker compose exec -T wordpress wp sync apply --dry-run   # ensaio
@@ -204,7 +206,8 @@ docker compose exec -T wordpress wp sync apply             # aplica de verdade (
 
 Mostra o plano completo sem aplicar nada: o que seria importado, exportado,
 os conflitos, deleções pendentes e purges de tombstone. Ideal para review de
-PR e pipeline. Exit `0`/`1` (`1` = erro de plano, ex.: migration pendente).
+PR e pipeline. Exit `0`/`1` (`1` = erro de plano) · `3` migration pendente
+(recusa imediata com ação prescritiva).
 
 ```bash
 docker compose exec -T wordpress wp sync plan
