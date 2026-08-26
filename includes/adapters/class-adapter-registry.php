@@ -52,7 +52,20 @@ final class AdapterRegistry
      */
     private static function defaultDirectoryFor(string $taxonomy): string
     {
-        return str_replace(['_', '.'], '-', $taxonomy) . 's';
+        $dir = str_replace(['_', '.'], '-', $taxonomy);
+
+        // Plural legível via tabela de exceções + regra simples (fix dogfood:
+        // 'category' → 'categories', não 'categorys' — o exemplo normativo do
+        // B.1.1 usa categories/). Sem heurística agressiva: desconhecido → +s.
+        static $plurals = [
+            'category' => 'categories',
+            'taxonomy' => 'taxonomies',
+        ];
+        if (isset($plurals[$dir])) {
+            return $plurals[$dir];
+        }
+
+        return $dir . 's';
     }
 
     /** @var array<int,list<EntityAdapter>> estágio => adapters (§A.5.7 + B.6.2) */

@@ -147,10 +147,25 @@ final class Exporter
                 return new ExportResult(LogResult::SkippedIdempotent, $relative, $hash);
             }
 
-            // Degradação graciosa em FS read-only (§10.7).
+            // Degradação graciosa em FS read-only (§10.7) — writabilidade do
+            // ANCESTRAL EXISTENTE mais próximo (fix ibiomas: dir alvo de 2+
+            // níveis ausentes, ex. terms/categories → dirname=terms/ também
+            // inexistente → is_writable=false → "skipped-fs-readonly" eterno,
+            // e a criação de árvore do writeAtomic nunca rodava. Árvore
+            // ausente NÃO é read-only; o erro genuíno — ancestral existente
+            // não gravável — continua detectado).
             $targetDir = dirname($this->paths->resolveWritable($relative));
-            if (!is_writable(is_dir($targetDir) ? $targetDir : dirname($targetDir))) {
-                $this->appendLog($ref, $trigger, $relative, null, null, LogResult::SkippedFsReadonly, 'FS read-only');
+            $probe = $targetDir;
+            while (!is_dir($probe)) {
+                $parent = dirname($probe);
+                if ($parent === $probe) {
+                    $probe = $this->paths->contentDir(); // raiz da contenção — sempre existente
+                    break;
+                }
+                $probe = $parent;
+            }
+            if (!is_writable($probe)) {
+                $this->appendLog($ref, $trigger, $relative, null, null, LogResult::SkippedFsReadonly, sprintf('FS read-only (ancestral %s)', $probe));
 
                 return new ExportResult(LogResult::SkippedFsReadonly, $relative, $hash, 'FS read-only');
             }

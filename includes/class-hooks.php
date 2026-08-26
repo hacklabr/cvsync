@@ -270,18 +270,29 @@ final class Hooks
      * bounded, filtrada a posts versionados.
      * Também captura o uuid (termmeta some com a deleção) para o delete_term.
      */
-    public function onPreDeleteTerm(\WP_Term $term, string $taxonomy): void
+    /**
+     * Fix dogfood: o core passa o TERM_ID (int) em pre_delete_term — não o
+     * objeto (documentação do hook sugere WP_Term, o runtime entrega int).
+     * Aceita ambos; resolve o objeto e blinda a ausência (termo já removido
+     * por caminho concorrente → nada a fazer).
+     */
+    public function onPreDeleteTerm(int|\WP_Term $term, string $taxonomy): void
     {
         if ($this->guard->isImporting() || !$this->isVersionedTaxonomy($taxonomy)) {
             return;
         }
 
-        $this->pendingTermDeletes[(int) $term->term_taxonomy_id] = [
-            'uuid' => (string) get_term_meta($term->term_id, '_cvsync_uuid', true),
-            'key'  => $taxonomy . ':' . $term->slug,
+        $termObject = $term instanceof \WP_Term ? $term : get_term((int) $term, $taxonomy);
+        if (!$termObject instanceof \WP_Term) {
+            return;
+        }
+
+        $this->pendingTermDeletes[(int) $termObject->term_taxonomy_id] = [
+            'uuid' => (string) get_term_meta((int) $termObject->term_id, '_cvsync_uuid', true),
+            'key'  => $taxonomy . ':' . $termObject->slug,
         ];
 
-        $objectIds = get_objects_in_term([$term->term_id], $taxonomy); // API pública, indexada
+        $objectIds = get_objects_in_term([(int) $termObject->term_id], $taxonomy); // API pública, indexada
         if (is_wp_error($objectIds)) {
             return;
         }
