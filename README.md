@@ -76,6 +76,81 @@ São duas superfícies de configuração com papéis distintos (§A.13.10):
 O apply loga warning quando a config do lint e as constantes divergirem.
 Mantenha as duas em sincronia (mesmos limites de tamanho/MIME).
 
+## Post types versionados
+
+A estrutura de site versionada por default (posts de conteúdo comum **não**
+são versionados):
+
+| Post type | Diretório em `content/` | Extensão |
+|---|---|---|
+| `page` | `pages/` | `.page.html` |
+| `wp_block` (padrões) | `patterns/` | `.pattern.html` |
+| `wp_template` | `templates/` | `.template.html` |
+| `wp_template_part` | `templates/parts/` | `.template-part.html` |
+| `wp_navigation` | `navigation/` | `.navigation.html` |
+
+### Adicionando CPTs — filtro `cvsync/post_types`
+
+```php
+add_filter('cvsync/post_types', fn () => [
+    'projeto',                                    // forma simples: defaults derivados
+    'institucional' => [                          // forma associativa: sobrescreve campos
+        'dir'   => 'site/institucional',
+        'ext'   => '.inst.html',
+        'stage' => 3,
+        'meta'  => ['_thumbnail_id', '_wp_page_template', 'destaque'],
+    ],
+]);
+```
+
+Campos da forma associativa:
+
+| Campo | Controla | Default derivado |
+|---|---|---|
+| `dir` | Diretório em `content/` | `{type}s` |
+| `ext` | Extensão do arquivo | `.{type}.html` |
+| `stage` | Estágio de aplicação (deps: 1 blocos/navegação, 2 templates, 3 páginas/CPTs) | `3` |
+| `statuses` | Statuses versionados | `['publish', 'draft', 'private']` |
+| `meta` | Whitelist de meta no payload/hash | `['_thumbnail_id']` |
+| `identity_taxonomies` | Taxonomias cujos termos entram no payload do post | `[]` |
+
+### Pré-condição dura: revisions (§3.2)
+
+Todo post type versionado **precisa de suporte a revisions** — o plugin recusa
+operar sem isso (erro claro na ativação e no `verify`): registre o CPT com
+`supports => ['title', 'editor', 'revisions', ...]` ou, para CPT alheio já
+registrado, `add_post_type_support('projeto', 'revisions')`.
+
+### Conteúdo existente
+
+Post type adicionado em projeto com conteúdo já criado: os posts aparecem
+como **`untracked` no `verify`** até rodar `wp sync export` (a "adoção" gera o
+uuid e exporta os arquivos canônicos).
+
+### Meta
+
+- Por post type: campo `meta` da config (whitelist — só o que está na lista
+  entra no payload e no hash);
+- Global: filtro `cvsync/meta_whitelist` (recebe a whitelist do tipo, pode
+  ajustá-la);
+- Meta **fora da Meta API** (Pods/ACF table-based): filtro
+  `cvsync/meta_providers` (§3.3) com callables `fn (int $postId, string
+  $type): array` — o retorno é mesclado ao meta do post.
+
+### `identity_taxonomies` × taxonomias versionadas
+
+São coisas diferentes: `identity_taxonomies` define termos que entram no
+**payload/hash do post** (associação — ex.: `wp_pattern_category` nos padrões);
+taxonomia versionada como **entidade** (definição do termo em
+`content/terms/`) é opt-in via `cvsync/taxonomies` — ver seção
+[Termos de taxonomia (Apêndice B)](#termos-de-taxonomia-apêndice-b).
+
+### Attachments
+
+Anexos de mídia **não** se configuram por este filtro: são entidade própria
+(Apêndice A, escopo `referenced` — ver `CVSYNC_ATTACHMENT_*` na tabela de
+constantes).
+
 ## Termos de taxonomia (Apêndice B)
 
 Versionamento **opcional** da definição editorial de termos (name, slug,
