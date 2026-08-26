@@ -151,7 +151,64 @@ Anexos de mídia **não** se configuram por este filtro: são entidade própria
 (Apêndice A, escopo `referenced` — ver `CVSYNC_ATTACHMENT_*` na tabela de
 constantes).
 
+## Painel de configuração (Ferramentas → CVSync → Configuração)
+
+Tela admin (`manage_options`) para configurar **escopo e comportamento de
+import** — o que continua fora dela é decisão de deploy/CLI. Tudo persiste na
+option única `cvsync_settings` (`taxonomies`, `post_types`, `lock_imports`,
+`auto_import`).
+
+- **Ambiente (read-only):** box no topo mostra o ambiente efetivo
+  (`local`/`staging`/`homolog`/`prod`) e a política resultante (apply/import e
+  export: ON/OFF). **Não é editável na tela por norma** (§7.1/§10.1): ambiente
+  é fail-closed via `wp-config.php`/env (`WP_ENVIRONMENT_TYPE` ou
+  `CVSYNC_ENVIRONMENT`) — uma option viajaria num dump de banco; em prod o box
+  é um aviso fail-closed explícito (apply manual só com triplo fator).
+- **Bloquear importações neste ambiente** (`lock_imports`): recusa comandos e
+  handlers de import no ambiente. Só sabe **restringir** — se a option viajar
+  num dump, o destino fica bloqueado, nunca liberado (fail-closed por direção).
+  Em prod o toggle fica desabilitado (a matriz §7.3 já bloqueia).
+- **Importação automática ao detectar mudanças no repositório**
+  (`auto_import`): habilita o check passivo de HEAD-hash + reconcile agendado.
+  Em prod: desabilitado (matriz manda OFF; a option é inócua num dump).
+- **Taxonomias sincronizadas:** checkboxes das taxonomias públicas; a
+  deny-list do Apêndice B (`nav_menu`, `wp_theme`, `wp_pattern_category`,
+  `wp_template_part_area`, `link_category`, `post_format`) aparece desabilitada
+  com o motivo. O filtro `cvsync/taxonomies` do código continua valendo
+  (**união** com o marcado na tela).
+- **Post types sincronizados:** os defaults (estrutura de site) aparecem
+  marcados e travados; os demais públicos são opcionais — sem suporte a
+  revisions o checkbox fica desabilitado com o motivo (§3.2). União com o
+  filtro `cvsync/post_types`. Attachments não se configuram aqui (Apêndice A).
+
+### Exportar / importar conteúdo (.zip)
+
+Botões na mesma tela (handlers em `admin-post.php`, nonce `cvsync_io`):
+
+- **Export:** empacota o `content/` atual para download. Liberado em qualquer
+  ambiente (read-only). Use para capturar conteúdo de um ambiente sem git ou
+  para transferência manual.
+- **Import:** upload de um zip com o `content/` de outro ambiente — o zip é
+  **input de terceiro** e atravessa a mesma fronteira de um PR, então a
+  validação roda antes de qualquer byte tocar o content dir ativo: teto de
+  200 MB (físico **e** descompactado — zip bomb), varredura de path
+  traversal/symlinks/executáveis, whitelist de subdirs/extensões, validação de
+  conteúdo (frontmatter, anti-regressão §6.2, magic bytes dos blobs), teto de
+  ~50 entidades, extração em tmp, backup do `content/` atual e **swap atômico**
+  (rename); falha pós-backup restaura o backup automaticamente. O resultado do
+  apply (aplicados/ignorados/conflitos/erros) volta como notice na tela.
+- **Quando usar CLI:** ambientes com o content dir em FS imutável, lotes
+  grandes que precisem de `--batch`, e qualquer operação fora da fronteira
+  admin — a CLI é o caminho canônico (§8.3).
+
+> **Ressalva operacional (import via web):** o swap atômico usa `rename` no
+> **diretório pai do content dir** — em ambientes docker com bind mount, o
+> `www-data` precisa de permissão de escrita nesse pai (no projeto-base o
+> compose alinha o uid via `WWW_DATA_UID`). Sem isso, o import falha com a
+> mensagem acionável (via `wp-cli`/root funciona).
+
 ## Termos de taxonomia (Apêndice B)
+
 
 Versionamento **opcional** da definição editorial de termos (name, slug,
 description, parent por slug e meta da whitelist). **Desligado por default**:

@@ -29,10 +29,14 @@ final class ToolsPage
     ) {
     }
 
-    /** Registra a página (chamado pelo bootstrap, P6). */
+    /** Registra a página (chamado pelo bootstrap, P6) — e a aba Configuração. */
     public function register(): void
     {
         add_action('admin_menu', [$this, 'registerMenu']);
+
+        // Aba "Configuração" (SettingsPage) — mesma tela pai (Ferramentas),
+        // option única `cvsync_settings` (contrato central).
+        ( new SettingsPage() )->register();
     }
 
     public function registerMenu(): void
@@ -55,6 +59,7 @@ final class ToolsPage
 
         echo '<div class="wrap">';
         printf('<h1>%s</h1>', esc_html__('CVSync — Log e Conflitos', 'cvsync'));
+        SettingsPage::renderTabs('log');
 
         $this->renderConflicts();
         $this->renderLog();

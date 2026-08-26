@@ -78,6 +78,15 @@ final class Triggers
             return;
         }
 
+        // Gate auto_import (painel de configuração, default false): o reconcile
+        // automático por HEAD-hash é OPT-IN — sem o toggle, o divergir de HEAD
+        // apenas aparece no `wp sync status`/`verify`, e o apply é manual
+        // (CLI/hook/painel). Ambientes sem a option se comportam como off.
+        $settings = (array) get_option('cvsync_settings', []);
+        if (empty($settings['auto_import'])) {
+            return;
+        }
+
         $head = self::readHead(self::repoRoot());
         if (null === $head) {
             return; // sem .git (artefato deployado) — nada a comparar

@@ -90,6 +90,11 @@ function cvsync_autoload(string $class): void
         'CVSync\Cli\Container'       => 'cli/class-cli.php',
         'CVSync\Cli\CommandConflict' => 'cli/class-command-conflicts.php',
         'CVSync\Cli\CommandBlame'    => 'cli/class-command-log.php',
+        // Content I/O (.zip): ZipIo + exceções em arquivo multi-tipo com nome
+        // fora da convenção (class-content-io.php — pendência devops resolvida).
+        'CVSync\ZipIo'                  => 'class-content-io.php',
+        'CVSync\ContentIoException'     => 'class-content-io.php',
+        'CVSync\ZipValidationException' => 'class-content-io.php',
     ];
 
     $base = __DIR__ . '/includes/';
@@ -527,5 +532,13 @@ function cvsync_bootstrap(): void
             $container->log,
             $container->conflicts
         ) )->register();
+
+        // Handlers export/import .zip (admin-post.php) — actions
+        // cvsync_export_zip / cvsync_import_zip consumidas pelos forms da
+        // aba Configuração. Idempotente (add_action ignora duplicatas
+        // exatas; registro único — este é o único call site).
+        if (class_exists(\CVSync\Admin\IoHandlers::class)) {
+            \CVSync\Admin\IoHandlers::register();
+        }
     }
 }

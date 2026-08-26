@@ -3,14 +3,21 @@
  * AdapterRegistry — configuração de post types versionados e ordem de
  * estágios do apply (§A.5.7).
  *
- * O conjunto versionado NUNCA é hardcoded (§3.2): defaults do core + filtro
- * 'cvsync/post_types'. Whitelist de meta por post type via filtro
- * 'cvsync/meta_whitelist' (§3.3). P4 registra o AttachmentAdapter no estágio 0
- * via register() (integração declarada — attachment não é construído aqui).
+ * Fontes de config, em precedência (a primeira vence; união sem duplicar):
+ * defaults do core → option 'cvsync_settings' (painel de configuração) →
+ * filtro 'cvsync/post_types' / 'cvsync/taxonomies'. A option entra como
+ * fonte ADICIONAL com os mesmos defaults derivados do filtro (item simples:
+ * dir `{type}s`, ext `.{type}.html`, stage 3, meta ['_thumbnail_id']).
+ * Whitelist de meta por post type via filtro 'cvsync/meta_whitelist' (§3.3).
+ * P4 registra o AttachmentAdapter no estágio 0 via register().
  *
  * Pré-condição dura (§3.2): todo post type versionado precisa de
- * post_type_supports(revisions) — assertOperable() lança na ativação/verify;
- * 'attachment' é a exceção declarada da errata E4.
+ * post_type_supports(revisions) — assertOperable() lança na ativação/verify
+ * sobre o CONFIG FINAL (defaults + option + filtro, sem exceção para a
+ * origem); 'attachment' é a exceção declarada da errata E4. A deny-list do
+ * Apêndice B (B.1.2) é aplicada DEPOIS da união das fontes — item da option
+ * na deny-list é descartado com error_log (a tela filtra, o registry é a
+ * linha de defesa).
  *
  * @package CVSync\Adapters
  */
@@ -76,7 +83,10 @@ final class AdapterRegistry
     }
 
     /**
-     * Configuração dos post types versionados (defaults + 'cvsync/post_types').
+     * Configuração dos post types versionados — fontes em precedência:
+     * defaults do core → option 'cvsync_settings' → filtro 'cvsync/post_types'.
+     * (Post type já presente em fonte de maior precedência não é duplicado
+     * nem sobrescrito.)
      *
      * Formato: [ 'post-type' => ['dir' => ..., 'ext' => ..., 'stage' => ...,
      * 'statuses' => [...], 'meta' => [...], 'identity_taxonomies' => [...]] ]
@@ -108,13 +118,28 @@ final class AdapterRegistry
             ],
         ];
 
+        $config = $defaults;
+
+        // Option do painel (fonte ADICIONAL; defaults derivados idem filtro).
+        foreach ($this->settingsPostTypes() as $postType) {
+            if (isset($config[$postType])) {
+                continue; // default/filtro vence — sem duplicar
+            }
+            $config[$postType] = [
+                'dir' => $postType . 's', 'ext' => '.' . $postType . '.html', 'stage' => 3,
+                'meta' => ['_thumbnail_id'],
+            ];
+        }
+
         /** Filtro §3.2: CPTs adicionais entram no pipeline canônico de posts. */
         $extra = apply_filters('cvsync/post_types', []);
 
-        $config = $defaults;
         foreach ((array) $extra as $key => $value) {
             if (is_int($key)) {
                 $postType = (string) $value;
+                if (isset($config[$postType])) {
+                    continue; // sem duplicar (filtro só sobrescreve com forma associativa)
+                }
                 $config[$postType] = [
                     'dir' => $postType . 's', 'ext' => '.' . $postType . '.html', 'stage' => 3,
                     'meta' => ['_thumbnail_id'],
@@ -131,6 +156,31 @@ final class AdapterRegistry
         }
 
         return $config;
+    }
+
+    /**
+     * Post types da option 'cvsync_settings' (painel) — slugs simples,
+     * sanitizados; fonte adicional, default [].
+     *
+     * @return list<string>
+     */
+    private function settingsPostTypes(): array
+    {
+        $settings = get_option('cvsync_settings', []);
+        if (!is_array($settings)) {
+            return [];
+        }
+        $slugs = (array) ($settings['post_types'] ?? []);
+
+        return array_values(array_unique(array_filter(
+            array_map(
+                static function (mixed $v): string {
+                    return is_scalar($v) ? sanitize_key((string) $v) : '';
+                },
+                $slugs
+            ),
+            static fn (string $v): bool => $v !== ''
+        )));
     }
 
     private function registerDefaults(): void
@@ -193,12 +243,26 @@ final class AdapterRegistry
      */
     public function taxonomyConfig(): array
     {
+        // União das fontes (B.1.1): option do painel + filtro. Itens simples
+        // nas duas; a deny-list B.1.2 é aplicada DEPOIS da união, no
+        // assertOperable (linha de defesa — a tela também filtra).
         $extra = apply_filters('cvsync/taxonomies', []);
 
         $config = [];
+
+        foreach ($this->settingsTaxonomies() as $taxonomy) {
+            if (isset($config[$taxonomy])) {
+                continue;
+            }
+            $config[$taxonomy] = ['dir' => self::defaultDirectoryFor($taxonomy), 'meta' => ['thumbnail_id']];
+        }
+
         foreach ((array) $extra as $key => $value) {
             if (is_int($key)) {
                 $taxonomy = (string) $value;
+                if (isset($config[$taxonomy])) {
+                    continue;
+                }
                 $config[$taxonomy] = ['dir' => self::defaultDirectoryFor($taxonomy), 'meta' => ['thumbnail_id']];
             } else {
                 $config[(string) $key] = array_merge(
@@ -209,6 +273,43 @@ final class AdapterRegistry
         }
 
         return $config;
+    }
+
+    /**
+     * Taxonomias da option 'cvsync_settings' (painel) — slugs simples,
+     * sanitizados; fonte adicional, default []. A deny-list B.1.2 é barrada
+     * aqui com error_log (defesa em profundidade: o assertOperable recusa a
+     * ativação; isto impede até o registro do adapter).
+     *
+     * @return list<string>
+     */
+    private function settingsTaxonomies(): array
+    {
+        $settings = get_option('cvsync_settings', []);
+        if (!is_array($settings)) {
+            return [];
+        }
+        $slugs = (array) ($settings['taxonomies'] ?? []);
+
+        $clean = [];
+        foreach (array_unique(array_filter(
+            array_map(
+                static fn (mixed $v): string => is_scalar($v) ? sanitize_key((string) $v) : '',
+                $slugs
+            ),
+            static fn (string $v): bool => $v !== ''
+        )) as $taxonomy) {
+            if (in_array($taxonomy, self::DENIED_TAXONOMIES, true)) {
+                error_log(sprintf(
+                    '[cvsync] taxonomia "%s" da option cvsync_settings é deny-listed do Apêndice B (B.1.2) — descartada.',
+                    $taxonomy
+                ));
+                continue;
+            }
+            $clean[] = $taxonomy;
+        }
+
+        return $clean;
     }
 
     /** Registro explícito (P4 registra o AttachmentAdapter no estágio 0). */
@@ -380,7 +481,7 @@ final class AdapterRegistry
             if (in_array($taxonomy, self::DENIED_TAXONOMIES, true)) {
                 throw new AdapterException(
                     sprintf(
-                        'Taxonomia "%s" é deny-listed do Apêndice B (já tem dono no cvsync ou é estrutural do core) — remova-a do filtro cvsync/taxonomies.',
+                        'Taxonomia "%s" é deny-listed do Apêndice B (já tem dono no cvsync ou é estrutural do core) — remova-a do filtro cvsync/taxonomies ou da option cvsync_settings.',
                         $taxonomy
                     )
                 );
