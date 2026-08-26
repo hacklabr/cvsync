@@ -35,11 +35,14 @@ class SymlinkTargetException extends \RuntimeException
 
 final class PathGuard
 {
-    /** Segmento de diretório / slug (§6.4). */
-    private const SLUG_PATTERN = '/^[a-z0-9][a-z0-9\-]*$/';
+    /** Segmento de diretório / slug (§6.4 + fix underscore: sanitize_title
+     *  preserva '_' e slugs REAIS do WP contêm underscore — '_' não abre
+     *  vetor de traversal; '/', '\0', '..', segmentos vazios e path absoluto
+     *  continuam barrados antes na validate()). */
+    private const SLUG_PATTERN = '/^[a-z0-9][a-z0-9_\-]*$/';
 
     /** Nome de arquivo: slug + extensões com kind ('.page.html', '.menu.yml'). */
-    private const FILENAME_PATTERN = '/^[a-z0-9][a-z0-9\-]*(\.[a-z0-9][a-z0-9\-]*)+$/';
+    private const FILENAME_PATTERN = '/^[a-z0-9][a-z0-9_\-]*(\.[a-z0-9][a-z0-9_\-]*)+$/';
 
     private readonly string $root;
 

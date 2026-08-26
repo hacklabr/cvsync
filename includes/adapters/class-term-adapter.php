@@ -294,7 +294,7 @@ final class TermAdapter implements EntityAdapter
         }
 
         $slug = $frontmatter['slug'] ?? null;
-        if (!is_string($slug) || preg_match('/^[a-z0-9][a-z0-9\-]*$/', $slug) !== 1) {
+        if (!is_string($slug) || preg_match('/^[a-z0-9][a-z0-9_\-]*$/', $slug) !== 1) {
             throw new RejectedEntityException(sprintf('Slug de termo fora do padrão §6.4: "%s".', (string) $slug));
         }
 
@@ -303,7 +303,7 @@ final class TermAdapter implements EntityAdapter
         }
 
         $parent = $frontmatter['parent'] ?? null;
-        if ($parent !== null && (!is_string($parent) || preg_match('/^[a-z0-9][a-z0-9\-]*$/', $parent) !== 1)) {
+        if ($parent !== null && (!is_string($parent) || preg_match('/^[a-z0-9][a-z0-9_\-]*$/', $parent) !== 1)) {
             throw new RejectedEntityException('parent de termo deve ser slug da MESMA taxonomy ou null (B.4).');
         }
     }

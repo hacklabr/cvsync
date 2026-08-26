@@ -87,7 +87,7 @@ final class Sidecar
         if ($sidecar->uuid === '' || $sidecar->slug === '' || $sidecar->originalFilename === '' || $sidecar->blob === '') {
             throw new RejectedEntityException('Sidecar sem uuid/slug/original_filename/blob obrigatórios (§A.3.2).');
         }
-        if (preg_match('/^[a-z0-9][a-z0-9\-]*$/', $sidecar->slug) !== 1) {
+        if (preg_match('/^[a-z0-9][a-z0-9_\-]*$/', $sidecar->slug) !== 1) {
             throw new RejectedEntityException(sprintf('Slug de attachment fora do padrão §6.4: "%s".', $sidecar->slug));
         }
         // blob sempre prefixado 'sha256:<64hex>' (Hasher::normalize valida).

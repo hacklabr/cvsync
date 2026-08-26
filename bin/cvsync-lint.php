@@ -383,8 +383,8 @@ foreach ($textFiles as [$rel, $abs]) {
             $report->error($rel, 'schema', "'uuid' is not a UUID.");
         }
         if (isset($fm['stylesheet'])) {
-            if (preg_match('/^[a-z0-9][a-z0-9\-]*$/', (string) $fm['stylesheet']) !== 1) {
-                $report->error($rel, 'schema', "'stylesheet' violates ^[a-z0-9][a-z0-9\\-]*\$.");
+            if (preg_match('/^[a-z0-9][a-z0-9_\-]*$/', (string) $fm['stylesheet']) !== 1) {
+                $report->error($rel, 'schema', "'stylesheet' violates ^[a-z0-9][a-z0-9_\\-]*\$.");
             } elseif ($fm['stylesheet'] !== basename($rel, '.global-styles.json')) {
                 $report->error($rel, 'schema', "frontmatter stylesheet '{$fm['stylesheet']}' != filename '" . basename($rel, '.global-styles.json') . "' (§4.5: um arquivo por stylesheet).");
             }
@@ -435,8 +435,8 @@ foreach ($textFiles as [$rel, $abs]) {
         if (isset($doc['taxonomy']) && preg_match('/^[a-z0-9_.\-]+$/', (string) $doc['taxonomy']) !== 1) {
             $report->error($rel, 'schema', "'taxonomy' must match sanitize_key alphabet (no ':').");
         }
-        if (isset($doc['slug']) && preg_match('/^[a-z0-9][a-z0-9\-]*$/', (string) $doc['slug']) !== 1) {
-            $report->error($rel, 'schema', "'slug' violates ^[a-z0-9][a-z0-9\\-]*\$ (§6.4/B.3).");
+        if (isset($doc['slug']) && preg_match('/^[a-z0-9][a-z0-9_\-]*$/', (string) $doc['slug']) !== 1) {
+            $report->error($rel, 'schema', "'slug' violates ^[a-z0-9][a-z0-9_\\-]*\$ (§6.4/B.3).");
         }
         if (isset($doc['slug']) && basename($rel, '.term.yml') !== (string) $doc['slug']) {
             $report->error($rel, 'schema', "file name must equal 'slug' (found '" . basename($rel, '.term.yml') . "' vs '{$doc['slug']}').");
@@ -444,7 +444,7 @@ foreach ($textFiles as [$rel, $abs]) {
         if (isset($doc['parent'])) {
             if (!is_string($doc['parent']) && $doc['parent'] !== null) {
                 $report->error($rel, 'schema', "'parent' must be a slug string or null.");
-            } elseif (is_string($doc['parent']) && preg_match('/^[a-z0-9][a-z0-9\-]*$/', $doc['parent']) !== 1) {
+            } elseif (is_string($doc['parent']) && preg_match('/^[a-z0-9][a-z0-9_\-]*$/', $doc['parent']) !== 1) {
                 $report->error($rel, 'schema', "'parent' must be a slug of the SAME taxonomy (§6.4/B.4).");
             }
         }
@@ -479,8 +479,8 @@ foreach ($textFiles as [$rel, $abs]) {
         if (isset($fm['uuid']) && preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i', (string) $fm['uuid']) !== 1) {
             $report->error($rel, 'schema', "'uuid' is not a UUID.");
         }
-        if (isset($fm['slug']) && preg_match('/^[a-z0-9][a-z0-9\-]*$/', (string) $fm['slug']) !== 1) {
-            $report->error($rel, 'schema', "'slug' violates ^[a-z0-9][a-z0-9\\-]*\$ (§6.4).");
+        if (isset($fm['slug']) && preg_match('/^[a-z0-9][a-z0-9_\-]*$/', (string) $fm['slug']) !== 1) {
+            $report->error($rel, 'schema', "'slug' violates ^[a-z0-9][a-z0-9_\\-]*\$ (§6.4).");
         }
         if (isset($fm['status'])) {
             if (!in_array($fm['status'], ['publish', 'draft', 'private'], true)) {

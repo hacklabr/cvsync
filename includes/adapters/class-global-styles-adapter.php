@@ -126,7 +126,7 @@ final class GlobalStylesAdapter extends AbstractPostAdapter
         parent::validateFrontmatter($frontmatter);
 
         $stylesheet = $frontmatter['stylesheet'] ?? null;
-        if (!is_string($stylesheet) || preg_match('/^[a-z0-9][a-z0-9\-]*$/', $stylesheet) !== 1) {
+        if (!is_string($stylesheet) || preg_match('/^[a-z0-9][a-z0-9_\-]*$/', $stylesheet) !== 1) {
             throw new RejectedEntityException('Global styles sem stylesheet válido no frontmatter.');
         }
     }

@@ -242,7 +242,7 @@ abstract class AbstractPostAdapter implements EntityAdapter
         }
 
         $slug = $frontmatter['slug'] ?? null;
-        if (!is_string($slug) || preg_match('/^[a-z0-9][a-z0-9\-]*$/', $slug) !== 1) {
+        if (!is_string($slug) || preg_match('/^[a-z0-9][a-z0-9_\-]*$/', $slug) !== 1) {
             throw new RejectedEntityException(sprintf('Slug fora do padrão §6.4: "%s".', (string) $slug));
         }
 

@@ -231,6 +231,19 @@ final class AdapterRegistry
         return $this->byTaxonomy[$taxonomy] ?? null;
     }
 
+    /**
+     * Adapter do post type versionado — lookup direto pelo post_type (sem
+     * EntityRef: vários call sites têm só o post_type em mãos).
+     * Wrapper fino sobre o MESMO mapa byPostType do forRef(kind='post'):
+     * `forPostType('page') === forRef(EntityRef::post('page', '<qualquer-key>'))`
+     * para qualquer key. null = tipo não versionado (semântica pré-Apêndice B,
+     * restaurada após remoção acidental na refatoração do dispatch por kind).
+     */
+    public function forPostType(string $postType): ?EntityAdapter
+    {
+        return $this->byPostType[$postType] ?? null;
+    }
+
     /** @return list<string> Taxonomias versionadas (hooks de termos, B.2.4). */
     public function versionedTaxonomies(): array
     {

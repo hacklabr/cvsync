@@ -487,7 +487,12 @@ function cvsync_bootstrap(): void
         ) )->register();
 
         // P4 (mídia) — só presente quando o container montou o estágio 0.
-        $attachmentAdapter = $container->adapters->forPostType('attachment');
+        // Lookup via forRef(EntityRef::post(...)): o registry pós-Apêndice B
+        // não expõe mais forPostType() — kind 'post' consulta o mesmo mapa
+        // interno byPostType (a key do probe é irrelevante).
+        $attachmentAdapter = $container->adapters->forRef(
+            \CVSync\Engine\EntityRef::post('attachment', 'cvsync:probe')
+        );
         if ($attachmentAdapter instanceof \CVSync\Media\AttachmentAdapter
             && null !== $container->referenceGraph
         ) {

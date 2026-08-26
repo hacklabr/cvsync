@@ -193,7 +193,7 @@ final class MenuAdapter implements EntityAdapter
         $data = FrontmatterParser::parse($bytes);
 
         $slug = $data['slug'] ?? null;
-        if (!is_string($slug) || preg_match('/^[a-z0-9][a-z0-9\-]*$/', $slug) !== 1) {
+        if (!is_string($slug) || preg_match('/^[a-z0-9][a-z0-9_\-]*$/', $slug) !== 1) {
             throw new RejectedEntityException('Menu sem slug válido (§6.4).');
         }
         if (!is_string($data['uuid'] ?? null)) {
