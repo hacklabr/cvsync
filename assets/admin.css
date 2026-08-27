@@ -20,7 +20,12 @@
 	--cvsync-radius: 4px;
 
 	color: var(--cvsync-color-text);
-	max-width: 980px; /* tela de config não precisa de 1600px de linha */
+}
+
+/* Teto de leitura confortável SÓ na tela de configuração (page hook
+ * tools_page_cvsync-settings); a tela de logs/conflitos é full width. */
+body.tools_page_cvsync-settings .cvsync-admin {
+	max-width: 980px;
 }
 
 /* ---------- Cards (agrupamento visual por seção) ---------- */
@@ -213,9 +218,23 @@
 	color: var(--cvsync-color-muted);
 }
 
-/* ---------- Tables (Log e Conflitos) ---------- */
+/* ---------- Tables (Log e Conflitos) — full width ---------- */
 
-.cvsync-admin table.widefat { margin-top: var(--cvsync-sp-2); }
+/* O card não espreme: a tabela ocupa 100% do card (default widefat) e as
+ * colunas se comportam: timestamps nunca quebram; codes/tuples longos
+ * (entity_key, paths, hashes) quebram em qualquer caractere. */
+.cvsync-admin table.widefat {
+	margin-top: var(--cvsync-sp-2);
+	table-layout: auto;
+	width: 100%;
+}
+
+.cvsync-admin table.widefat td:first-child,
+.cvsync-admin table.widefat th:first-child {
+	white-space: nowrap; /* timestamps / IDs */
+}
+
+.cvsync-admin table.widefat code { word-break: break-all; }
 
 .cvsync-code-wrap code { word-break: break-all; }
 
@@ -242,9 +261,15 @@
 
 /* ---------- Responsivo (breakpoint padrão do admin WP) ---------- */
 
-@media (max-width: 782px) {
-	.cvsync-admin { max-width: none; }
+/* Tela de logs/conflitos em desktop: card relaxa com a largura disponível
+ * (acima do breakpoint mobile). */
+@media (min-width: 1100px) {
+	body.tools_page_cvsync .cvsync-card {
+		padding: var(--cvsync-sp-5) var(--cvsync-sp-6);
+	}
+}
 
+@media (max-width: 782px) {
 	.cvsync-card {
 		padding: var(--cvsync-sp-3) var(--cvsync-sp-4);
 		margin-bottom: var(--cvsync-sp-4);
