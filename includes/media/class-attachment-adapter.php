@@ -92,7 +92,7 @@ final class AttachmentAdapter extends AbstractPostAdapter
         return '.attachment.yml';
     }
 
-    public function metaWhitelist(): array
+    public function metaAllowlist(): array
     {
         return ['_wp_attached_file', '_wp_attachment_image_alt']; // §A.2.4 — positiva e curta
     }

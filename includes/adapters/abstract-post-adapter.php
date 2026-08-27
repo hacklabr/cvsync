@@ -7,7 +7,7 @@
  * Responsabilidades:
  *  - Leitura canônica (banco → forma do arquivo): frontmatter na keyOrder
  *    fixa + corpo byte-a-byte placeholderizado (PlaceholderCodec com o
- *    ReferenceResolver injetado) + meta da whitelist canonicalizado (§5.6) +
+ *    ReferenceResolver injetado) + meta da allowlist canonicalizado (§5.6) +
  *    termos identitários (§4.2.5) + meta providers (§3.3);
  *  - Identidade: UUID v4 espelhado em '_cvsync_uuid'; adoção de legado com
  *    scan ÚNICO de postmeta (§9.1) — P2 nunca lê postmeta; verificação de
@@ -146,7 +146,7 @@ abstract class AbstractPostAdapter implements EntityAdapter
         }
 
         $uuid = wp_generate_uuid4();
-        // Meta interno: fora da whitelist e dos hooks de dirty (§5.4).
+        // Meta interno: fora da allowlist e dos hooks de dirty (§5.4).
         update_post_meta($dbId, '_cvsync_uuid', $uuid);
 
         return $uuid;
@@ -528,14 +528,14 @@ abstract class AbstractPostAdapter implements EntityAdapter
     }
 
     /**
-     * Meta versionado: whitelist (§3.3) → canonicalização §5.6 → providers.
+     * Meta versionado: allowlist (§3.3) → canonicalização §5.6 → providers.
      *
      * @return array<string,mixed>
      */
     protected function canonicalMeta(int $postId): array
     {
         $meta = [];
-        foreach ($this->metaWhitelist() as $key) {
+        foreach ($this->metaAllowlist() as $key) {
             if (in_array($key, self::ATTACHMENT_META_KEYS, true)) {
                 continue; // placeholderizado abaixo, nunca canonicalizado cru
             }
@@ -547,7 +547,7 @@ abstract class AbstractPostAdapter implements EntityAdapter
         }
 
         foreach (self::ATTACHMENT_META_KEYS as $key) {
-            if (!in_array($key, $this->metaWhitelist(), true)) {
+            if (!in_array($key, $this->metaAllowlist(), true)) {
                 continue;
             }
             $attachmentId = (int) get_post_meta($postId, $key, true);
@@ -653,7 +653,7 @@ abstract class AbstractPostAdapter implements EntityAdapter
     }
 
     /**
-     * Aplica meta da whitelist; placeholders {{attachment:slug}} são resolvidos
+     * Aplica meta da allowlist; placeholders {{attachment:slug}} são resolvidos
      * contra o banco local — não resolvidos são PULADOS e reportados (nunca
      * placeholder literal em coluna de meta, nunca ID de origem, §6).
      *
@@ -664,7 +664,7 @@ abstract class AbstractPostAdapter implements EntityAdapter
         $pending = [];
         $meta = $doc->meta();
 
-        foreach ($this->metaWhitelist() as $key) {
+        foreach ($this->metaAllowlist() as $key) {
             if (!array_key_exists($key, $meta)) {
                 continue;
             }

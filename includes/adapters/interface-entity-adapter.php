@@ -59,12 +59,12 @@ interface EntityAdapter
     public function fileExtension(): string;
 
     /**
-     * Whitelist de meta versionado (§3.3). Exclusões permanentes feitas pelo
+     * Allowlist de meta versionado (§3.3). Exclusões permanentes feitas pelo
      * chamador: '_cvsync_*' e '_edit_last'.
      *
      * @return list<string>
      */
-    public function metaWhitelist(): array;
+    public function metaAllowlist(): array;
 
     /**
      * Taxonomias identitárias (§4.2.5): entram no payload canônico e no hash.
@@ -100,7 +100,7 @@ interface EntityAdapter
 
     /**
      * Gera/persiste o UUID v4 (meta '_cvsync_uuid' — meta interno, excluído
-     * dos hooks de dirty e da whitelist, §5.4). Entidades auto-draft NUNCA
+     * dos hooks de dirty e da allowlist, §5.4). Entidades auto-draft NUNCA
      * recebem UUID (§3.2).
      *
      * $uuid (import path): o uuid do DOCUMENTO — uma entidade recém-aplicada

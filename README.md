@@ -58,7 +58,7 @@ qualquer constante → **default fail-safe + admin notice** (nunca silencioso).
 | `CVSYNC_CONTENT_DIR` | path | `<repo-root>/content` | detecção: primeiro ancestral do plugin com `.git`; fallback `dirname(ABSPATH)`. Nunca em tema/plugin/uploads |
 | `CVSYNC_FILE_MODE` / `CVSYNC_DIR_MODE` | octal | `0664` / `0775` | nunca depender de umask de request |
 | `CVSYNC_ATTACHMENT_MAX_BYTES` | bytes | `10485760` (10 MB) | teto único de anexo |
-| `CVSYNC_ATTACHMENT_MIME_TYPES` | lista CSV | `image/jpeg,image/png,image/webp,image/gif,application/pdf` | whitelist estática (interseção com `get_allowed_mime_types()`) |
+| `CVSYNC_ATTACHMENT_MIME_TYPES` | lista CSV | `image/jpeg,image/png,image/webp,image/gif,application/pdf` | allowlist estática (interseção com `get_allowed_mime_types()`) |
 | `CVSYNC_ATTACHMENT_ALLOW_SVG` | `true` \| `false` | `false` (default-deny) | opt-in de SVG; exige sanitizador (§A.9.3) |
 | `CVSYNC_ATTACHMENT_SCOPE` | `referenced` \| `all` | `referenced` | `all` exporta todo upload; typo NUNCA vira `all` silencioso |
 | `CVSYNC_SNAPSHOT_KEEP` | int | `10` | retenção de snapshots pré-apply |
@@ -111,7 +111,7 @@ Campos da forma associativa:
 | `ext` | Extensão do arquivo | `.{type}.html` |
 | `stage` | Estágio de aplicação (deps: 1 blocos/navegação, 2 templates, 3 páginas/CPTs) | `3` |
 | `statuses` | Statuses versionados | `['publish', 'draft', 'private']` |
-| `meta` | Whitelist de meta no payload/hash | `['_thumbnail_id']` |
+| `meta` | Allowlist de meta no payload/hash | `['_thumbnail_id']` |
 | `identity_taxonomies` | Taxonomias cujos termos entram no payload do post | `[]` |
 
 ### Pré-condição dura: revisions (§3.2)
@@ -127,15 +127,45 @@ Post type adicionado em projeto com conteúdo já criado: os posts aparecem
 como **`untracked` no `verify`** até rodar `wp sync export` (a "adoção" gera o
 uuid e exporta os arquivos canônicos).
 
-### Meta
+### Meta versionado (allowlist) por post type
 
-- Por post type: campo `meta` da config (whitelist — só o que está na lista
-  entra no payload e no hash);
-- Global: filtro `cvsync/meta_whitelist` (recebe a whitelist do tipo, pode
-  ajustá-la);
-- Meta **fora da Meta API** (Pods/ACF table-based): filtro
+Só o meta na **allowlist** do post type entra no payload canônico e no hash
+(§3.3). Defaults:
+
+| Post type | Meta versionado |
+|---|---|
+| `page` | `_wp_page_template`, `_thumbnail_id` |
+| CPTs adicionados via config/filtro | `_thumbnail_id` |
+| `wp_block` / `wp_template` / `wp_template_part` / `wp_navigation` / `wp_global_styles` | nenhum — a estrutura vive em taxonomias identitárias, não em meta |
+
+**Como ampliar** — filtro `cvsync/meta_allowlist` (forma canônica):
+
+```php
+add_filter('cvsync/meta_allowlist', function (array $meta, string $postType) {
+    if ($postType === 'page') {
+        $meta[] = '_meu_plugin_config'; // meta custom do seu plugin
+    }
+    return $meta;
+}, 10, 2);
+```
+
+Ampliar a allowlist **muda o hash** das entidades afetadas → elas aparecem
+como `dirty_db` no próximo ciclo e são re-exportadas normalmente. Nada quebra;
+é o mesmo fluxo de qualquer edição de conteúdo.
+
+- **Storage próprio (Pods table-based, ACF fora da Meta API): fora por
+  padrão** — meta que não passa pela Meta API do WP não é visto. Use o filtro
   `cvsync/meta_providers` (§3.3) com callables `fn (int $postId, string
-  $type): array` — o retorno é mesclado ao meta do post.
+  $type): array` (o retorno é mesclado ao payload/hash); o `wp sync verify`
+  emite **warning** quando detecta campos table-based conhecidos fora da
+  allowlist.
+- **Terminologia:** o projeto usa **allowlist/denylist** (nunca
+  whitelist/blacklist) — a deny-list de taxonomias do Apêndice B (B.1.2)
+  segue o mesmo vocabulário.
+- **Nomes antigos dos filtros:** `cvsync/meta_whitelist` e
+  `cvsync/term_meta_whitelist` ainda funcionam como fallback **deprecated**
+  (usados somente quando o nome novo não tem callback registrado) — serão
+  removidos; migre para os nomes com `allowlist`.
 
 ### `identity_taxonomies` × taxonomias versionadas
 
@@ -192,7 +222,7 @@ Botões na mesma tela (handlers em `admin-post.php`, nonce `cvsync_io`):
   **input de terceiro** e atravessa a mesma fronteira de um PR, então a
   validação roda antes de qualquer byte tocar o content dir ativo: teto de
   200 MB (físico **e** descompactado — zip bomb), varredura de path
-  traversal/symlinks/executáveis, whitelist de subdirs/extensões, validação de
+  traversal/symlinks/executáveis, allowlist de subdirs/extensões, validação de
   conteúdo (frontmatter, anti-regressão §6.2, magic bytes dos blobs), teto de
   ~50 entidades, extração em tmp, backup do `content/` atual e **swap atômico**
   (rename); falha pós-backup restaura o backup automaticamente. O resultado do
@@ -211,7 +241,7 @@ Botões na mesma tela (handlers em `admin-post.php`, nonce `cvsync_io`):
 
 
 Versionamento **opcional** da definição editorial de termos (name, slug,
-description, parent por slug e meta da whitelist). **Desligado por default**:
+description, parent por slug e meta da allowlist). **Desligado por default**:
 nada é versionado até o projeto optar via filtro `cvsync/taxonomies` (B.1.1):
 
 ```php
@@ -221,7 +251,7 @@ add_filter('cvsync/taxonomies', fn () => [
 ]);
 ```
 
-- Item com valor simples → defaults: diretório `{taxonomy}s` e whitelist de
+- Item com valor simples → defaults: diretório `{taxonomy}s` e allowlist de
   meta `['thumbnail_id']`; item associativo sobrescreve (`dir`, `meta`).
 - **Deny-list** (erro claro na ativação): `nav_menu`, `wp_theme`,
   `wp_pattern_category`, `wp_template_part_area`, `link_category`,

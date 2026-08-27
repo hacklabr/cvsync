@@ -51,7 +51,7 @@ final readonly class CanonicalDocument
         return (string) ($this->frontmatter['slug'] ?? '');
     }
 
-    /** @return array<string,mixed> Whitelisted canonical meta (frontmatter['meta']). */
+    /** @return array<string,mixed> Allowlisted canonical meta (frontmatter['meta']). */
     public function meta(): array
     {
         $meta = $this->frontmatter['meta'] ?? [];

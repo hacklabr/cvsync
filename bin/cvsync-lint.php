@@ -56,7 +56,7 @@ const DANGEROUS_EXTENSIONS = [
     'pl', 'py', 'rb', 'cgi', 'htaccess',
 ];
 
-/** finfo magic-bytes expectations per whitelisted MIME (never extension). */
+/** finfo magic-bytes expectations per allowlisted MIME (never extension). */
 const MAGIC_MAP = [
     'image/jpeg' => ['image/jpeg'],
     'image/png' => ['image/png'],
@@ -533,7 +533,7 @@ foreach ($sidecars as $slug => $abs) {
         $ok = false;
     }
 
-    // MIME whitelist (static, independent — §A.5.1.1) + SVG policy (§A.9.3)
+    // MIME allowlist (static, independent — §A.5.1.1) + SVG policy (§A.9.3)
     $mime = (string) ($doc['mime'] ?? '');
     if ($mime !== '') {
         if ($mime === 'image/svg+xml' && empty($config['attachment_allow_svg'])) {
@@ -543,7 +543,7 @@ foreach ($sidecars as $slug => $abs) {
             $report->error($rel, 'mime', 'SVG opt-in requires a sanitizer (enshrined/svg-sanitize) in the lint — fail-closed (§A.9.3).');
             $ok = false;
         } elseif (!in_array($mime, (array) $config['attachment_mime_types'], true)) {
-            $report->error($rel, 'mime', "MIME '{$mime}' outside the whitelist.");
+            $report->error($rel, 'mime', "MIME '{$mime}' outside the allowlist.");
             $ok = false;
         }
     }
@@ -610,7 +610,7 @@ foreach ($sidecars as $slug => $abs) {
                         $report->warn($rel, 'cas', "declared blob_size {$doc['blob_size']} != real {$size} (informative field).");
                     }
 
-                    // magic bytes × whitelist (finfo — never extension)
+                    // magic bytes × allowlist (finfo — never extension)
                     if (!extension_loaded('fileinfo')) {
                         $report->error($blobRel, 'mime', 'ext-fileinfo unavailable in CI — cannot verify magic bytes; failing closed.');
                         $ok = false;
@@ -619,7 +619,7 @@ foreach ($sidecars as $slug => $abs) {
                         $magic = finfo_file($finfo, $blobAbs) ?: '';
                         $expected = MAGIC_MAP[$mime] ?? [];
                         if ($expected !== [] && !in_array($magic, $expected, true)) {
-                            $report->error($blobRel, 'mime', "magic bytes '{$magic}' contradict declared/whitelisted MIME '{$mime}'.");
+                            $report->error($blobRel, 'mime', "magic bytes '{$magic}' contradict declared/allowlisted MIME '{$mime}'.");
                             $ok = false;
                         }
                     }

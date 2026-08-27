@@ -79,7 +79,7 @@ final class MenuAdapter implements EntityAdapter
         return '.menu.yml';
     }
 
-    public function metaWhitelist(): array
+    public function metaAllowlist(): array
     {
         return [];
     }

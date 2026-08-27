@@ -61,7 +61,7 @@ final class GlobalStylesAdapter extends AbstractPostAdapter
         return '.global-styles.json';
     }
 
-    public function metaWhitelist(): array
+    public function metaAllowlist(): array
     {
         return [];
     }

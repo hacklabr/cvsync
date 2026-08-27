@@ -8,7 +8,7 @@
  * filtro 'cvsync/post_types' / 'cvsync/taxonomies'. A option entra como
  * fonte ADICIONAL com os mesmos defaults derivados do filtro (item simples:
  * dir `{type}s`, ext `.{type}.html`, stage 3, meta ['_thumbnail_id']).
- * Whitelist de meta por post type via filtro 'cvsync/meta_whitelist' (§3.3).
+ * Allowlist de meta por post type via filtro 'cvsync/meta_allowlist' (§3.3).
  * P4 registra o AttachmentAdapter no estágio 0 via register().
  *
  * Pré-condição dura (§3.2): todo post type versionado precisa de
@@ -50,6 +50,32 @@ final class AdapterRegistry
      * para o alfabeto de path: underscore/ponto → hífen (precedente: menus/
      * attachments derivam de slugs já higienizados).
      */
+    /**
+     * Allowlist de meta via filtro público com RETROCOMPATIBILIDADE: aplica o
+     * nome NOVO (canônico); se nenhum callback estiver registrado nele, lê o
+     * nome ANTIGO como fallback deprecated (mesma semântica).
+     *
+     * @param list<string> $default
+     * @param string $subtype post type ou taxonomia (2º arg do filtro)
+     * @return list<string>
+     */
+    private function metaAllowlist(string $newFilter, array $default, string $subtype): array
+    {
+        $result = apply_filters($newFilter, $default, $subtype);
+        if (has_filter($newFilter)) {
+            return (array) $result;
+        }
+
+        /** @deprecated mantido por compatibilidade — será removido; use cvsync/meta_allowlist / cvsync/term_meta_allowlist */
+        $legacy = 'cvsync/' . str_replace('cvsync/', '', $newFilter);
+        $legacy = str_replace('allowlist', 'whitelist', $legacy);
+        if (has_filter($legacy)) {
+            return (array) apply_filters($legacy, $default, $subtype);
+        }
+
+        return (array) $result;
+    }
+
     private static function defaultDirectoryFor(string $taxonomy): string
     {
         $dir = str_replace(['_', '.'], '-', $taxonomy);
@@ -199,11 +225,7 @@ final class AdapterRegistry
     private function registerDefaults(): void
     {
         foreach ($this->postTypeConfig() as $postType => $config) {
-            $whitelist = apply_filters(
-                'cvsync/meta_whitelist',
-                (array) ($config['meta'] ?? []),
-                $postType
-            );
+            $allowlist = $this->metaAllowlist('cvsync/meta_allowlist', (array) ($config['meta'] ?? []), $postType);
 
             $adapter = new PostAdapter(
                 $this->state,
@@ -213,7 +235,7 @@ final class AdapterRegistry
                 (string) $config['dir'],
                 (string) $config['ext'],
                 (array) ($config['statuses'] ?? ['publish', 'draft', 'private']),
-                (array) $whitelist,
+                (array) $allowlist,
                 (array) ($config['identity_taxonomies'] ?? [])
             );
             $this->register($adapter, (int) $config['stage']);
@@ -222,8 +244,8 @@ final class AdapterRegistry
         // Apêndice B.1.1: taxonomias versionadas — filtro default VAZIO,
         // estágio 0 (ordem interna attachments→termos garantida em byStage()).
         foreach ($this->taxonomyConfig() as $taxonomy => $config) {
-            $whitelist = apply_filters(
-                'cvsync/term_meta_whitelist',
+            $allowlist = $this->metaAllowlist(
+                'cvsync/term_meta_allowlist',
                 (array) ($config['meta'] ?? ['thumbnail_id']),
                 $taxonomy
             );
@@ -235,7 +257,7 @@ final class AdapterRegistry
                     $this->paths,
                     $taxonomy,
                     (string) ($config['dir'] ?? self::defaultDirectoryFor($taxonomy)),
-                    array_values($whitelist)
+                    array_values($allowlist)
                 ),
                 0
             );

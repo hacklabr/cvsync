@@ -12,7 +12,7 @@
  *    bidirecional; rekey() da linha de state no rename vindo do admin
  *    (assinatura do P2 conforme apêndice B.2.3, com fallback sinalizado);
  *  - readCanonical: payload SEM uuid/hash no material hasheado (taxonomy, slug,
- *    name, description, parent-slug, meta whitelist canonicalizada +
+ *    name, description, parent-slug, meta allowlist canonicalizada +
  *    thumbnail_id placeholderizado);
  *  - serializeDocument: YAML integral via writeBlockYaml (precedente menu);
  *  - apply: wp_update_term/wp_insert_term DENTRO de ImportGuard+withLockedRow
@@ -62,7 +62,7 @@ final class TermAdapter implements EntityAdapter
         private readonly PathGuard $paths,
         private readonly string $taxonomy,
         private readonly string $directory,
-        private readonly array $metaWhitelist,
+        private readonly array $metaAllowlist,
     ) {
         if (preg_match('/^[a-z0-9_.\-]+$/', $taxonomy) !== 1 || str_contains($taxonomy, ':')) {
             throw new AdapterException(sprintf('Taxonomia inválida (sanitize_key, sem ":"): "%s"', $taxonomy));
@@ -99,9 +99,9 @@ final class TermAdapter implements EntityAdapter
         return '.term.yml';
     }
 
-    public function metaWhitelist(): array
+    public function metaAllowlist(): array
     {
-        return $this->metaWhitelist;
+        return $this->metaAllowlist;
     }
 
     public function identityTaxonomies(): array
@@ -194,7 +194,7 @@ final class TermAdapter implements EntityAdapter
      * termmeta fala term_id e é resolvida aqui dentro). $uuid opcional:
      * re-adoção com o uuid do DOCUMENTO no import (contrato da interface —
      * mesmo papel de AbstractPostAdapter::ensureUuid). Meta interno: fora
-     * da whitelist e dos hooks (§5.4).
+     * da allowlist e dos hooks (§5.4).
      */
     public function ensureUuid(int $dbId, ?string $uuid = null): string
     {
@@ -525,14 +525,14 @@ final class TermAdapter implements EntityAdapter
     }
 
     /**
-     * Meta da whitelist, canonicalizado (§5.6); thumbnail_id → {{attachment:slug}}.
+     * Meta da allowlist, canonicalizado (§5.6); thumbnail_id → {{attachment:slug}}.
      *
      * @return array<string,mixed>
      */
     private function canonicalMeta(int $termId): array
     {
         $meta = [];
-        foreach ($this->metaWhitelist as $key) {
+        foreach ($this->metaAllowlist as $key) {
             if (in_array($key, self::ATTACHMENT_META_KEYS, true)) {
                 $attachmentId = (int) get_term_meta($termId, $key, true);
                 if ($attachmentId <= 0) {
@@ -569,7 +569,7 @@ final class TermAdapter implements EntityAdapter
             return $pending;
         }
 
-        foreach ($this->metaWhitelist as $key) {
+        foreach ($this->metaAllowlist as $key) {
             if (!array_key_exists($key, $meta)) {
                 continue;
             }

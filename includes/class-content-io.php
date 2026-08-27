@@ -17,7 +17,7 @@
  *  b. Varredura estrutural de TODAS as entradas (sem I/O): path traversal
  *     (`..`, absoluto, drive, `\0`, backslash), symlinks (mode bits Unix do
  *     zip), double-extension/executáveis em QUALQUER posição (espelho da
- *     hard rule §A.9.5), subdir ∈ whitelist conhecida + extensão ∈ whitelist
+ *     hard rule §A.9.5), subdir ∈ allowlist conhecida + extensão ∈ allowlist
  *     por tipo de artefato (incl. blobs `media/bin/<2hex>/<64hex>.<mime-ext>`);
  *  c. Extração para dir tmp (NUNCA no destino) + validação de CONTEÚDO dos
  *     artefatos textuais: UTF-8, tags YAML `!` (§4.3), frontmatter parseável
@@ -64,7 +64,7 @@ final class ZipIo
         'pl', 'py', 'rb', 'cgi', 'htaccess',
     ];
 
-    /** Extensões de blob aceitas em media/bin/** (whitelist MIME §A.5.1.1). */
+    /** Extensões de blob aceitas em media/bin/** (allowlist MIME §A.5.1.1). */
     private const BLOB_EXTENSIONS = ['jpg', 'jpeg', 'png', 'webp', 'gif', 'pdf'];
 
     /** finfo magic-bytes por extensão de blob (nunca confiar na extensão). */
@@ -295,7 +295,7 @@ final class ZipIo
         // Entradas de DIRETÓRIO (terminam com '/'): ferramentas externas (zip
         // -r, Finder, Explorer) sempre as emitem — o próprio buildContentZip
         // não (LEAVES_ONLY). Aceitas (Z4): só o primeiro segmento precisa
-        // pertencer à whitelist; a extração materializa os dirs e a validação
+        // pertencer à allowlist; a extração materializa os dirs e a validação
         // de conteúdo roda sobre ARQUIVOS. Checadas ANTES do loop de segmentos
         // (o '/' final produziria um segmento vazio falso-positivo).
         if (str_ends_with($normalized, '/')) {
@@ -313,7 +313,7 @@ final class ZipIo
             }
         }
 
-        // Whitelist de subdir × extensão/kind.
+        // Allowlist de subdir × extensão/kind.
         if (! self::isExpectedArtifactPath($normalized)) {
             throw new ZipValidationException(sprintf(
                 'Path fora dos artefatos esperados sob content/: %s (subdirs/extensões conhecidos apenas — ver spec §4.1/A.3/B.3)',
@@ -507,7 +507,7 @@ final class ZipIo
     {
         $expected = self::BLOB_MAGIC[strtolower(pathinfo($rel, PATHINFO_EXTENSION))] ?? null;
         if (null === $expected) {
-            throw new ZipValidationException(sprintf('Extensão de blob fora da whitelist MIME: %s', $rel));
+            throw new ZipValidationException(sprintf('Extensão de blob fora da allowlist MIME: %s', $rel));
         }
 
         $finfo = new \finfo(FILEINFO_MIME_TYPE);

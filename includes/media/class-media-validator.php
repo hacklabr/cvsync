@@ -7,7 +7,7 @@
  *
  * O uploads é webroot e o input vem de PR (terceiro) — o envelope é MAIS
  * estrito que para texto:
- *  1. Whitelist estática própria (CVSYNC_ATTACHMENT_MIME_TYPES; default
+ *  1. Allowlist estática própria (CVSYNC_ATTACHMENT_MIME_TYPES; default
  *     jpeg/png/webp/gif/pdf) por INTERSEÇÃO com os mimes do site — nunca
  *     união; unfiltered_upload é ignorado por invariante; SVG default-deny
  *     (§A.9.3 — opt-in exige sanitizador dedicado, senão fail-closed);
@@ -53,7 +53,7 @@ final readonly class ValidationResult
 
 final class MediaValidator
 {
-    /** Whitelist default (§A.5.1.1). ZIP-bombs fora por construção (.zip ausente). */
+    /** Allowlist default (§A.5.1.1). ZIP-bombs fora por construção (.zip ausente). */
     private const DEFAULT_MIME_TYPES = [
         'image/jpeg', 'image/png', 'image/webp', 'image/gif', 'application/pdf',
     ];
@@ -77,11 +77,11 @@ final class MediaValidator
         $warnings = [];
         $degraded = false;
 
-        // Passo 1 — whitelist estática por INTERSEÇÃO (nunca união).
+        // Passo 1 — allowlist estática por INTERSEÇÃO (nunca união).
         $allowed = $this->allowedMimeTypes();
         if (!in_array($sidecar->mime, $allowed, true)) {
             $violations[] = sprintf(
-                'MIME "%s" fora da whitelist efetiva (%s) — unfiltered_upload é ignorado por invariante.',
+                'MIME "%s" fora da allowlist efetiva (%s) — unfiltered_upload é ignorado por invariante.',
                 $sidecar->mime,
                 implode(', ', $allowed)
             );
@@ -99,7 +99,7 @@ final class MediaValidator
                 $filename
             );
         } elseif (!in_array((string) $check['type'], $allowed, true)) {
-            $violations[] = sprintf('MIME real "%s" detectado na inspeção está fora da whitelist.', (string) $check['type']);
+            $violations[] = sprintf('MIME real "%s" detectado na inspeção está fora da allowlist.', (string) $check['type']);
         }
 
         // Passo 3 — double-extension (evil.php.jpg): executável em qualquer posição.
@@ -131,7 +131,7 @@ final class MediaValidator
     }
 
     /**
-     * Whitelist efetiva: whitelist estática do plugin ∩ mimes permitidos do
+     * Allowlist efetiva: allowlist estática do plugin ∩ mimes permitidos do
      * site. INTERSEÇÃO, nunca união; unfiltered_upload ignorado por
      * invariante (o plugin nunca define, nunca exige, não honra).
      * Leitura EXCLUSIVA via registry do Environment (§10.1; R4 do r9):
@@ -161,7 +161,7 @@ final class MediaValidator
     }
 
     /**
-     * Mapa ext=>mime restrito à whitelist, para wp_check_filetype_and_ext.
+     * Mapa ext=>mime restrito à allowlist, para wp_check_filetype_and_ext.
      *
      * @param list<string> $allowed
      * @return array<string,string>

@@ -408,7 +408,7 @@ final class StateStore
     // ------------------------------------------------------------------
 
     /**
-     * Cria ou atualiza a linha da tupla. $fields é whitelist-validado contra
+     * Cria ou atualiza a linha da tupla. $fields é allowlist-validado contra
      * COLUMN_FORMATS — nunca array cruzado direto para $wpdb->update().
      *
      * Cobre a redescoberta do bootstrap (§5.3): o engine decide ok/conflict, o
@@ -418,7 +418,7 @@ final class StateStore
      * @param array<string, mixed> $fields Valores podem ser scalar|null,
      *        EntityStatus, SyncDirection, \DateTimeImmutable ou array
      *        (pending_payload — serializado como JSON).
-     * @throws \InvalidArgumentException Coluna fora da whitelist.
+     * @throws \InvalidArgumentException Coluna fora da allowlist.
      * @throws StorageException Erro de banco (inclui duplicate key em insert concorrente).
      */
     public function upsert(EntityRef $ref, array $fields): StateRecord
@@ -1012,7 +1012,7 @@ final class StateStore
     }
 
     /**
-     * Whitelist + normalização de tipos dos campos graváveis.
+     * Allowlist + normalização de tipos dos campos graváveis.
      *
      * @param array<string, mixed> $fields
      * @return array{0: array<string, mixed>, 1: list<string>} [data, formats]
@@ -1025,7 +1025,7 @@ final class StateStore
         foreach ($fields as $column => $value) {
             if (! isset(self::COLUMN_FORMATS[$column])) {
                 throw new \InvalidArgumentException(
-                    sprintf('state.upsert: coluna "%s" fora da whitelist.', $column)
+                    sprintf('state.upsert: coluna "%s" fora da allowlist.', $column)
                 );
             }
 

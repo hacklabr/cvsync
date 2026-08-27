@@ -76,7 +76,7 @@ final class BrandingAdapter implements EntityAdapter
         return '.branding.yml';
     }
 
-    public function metaWhitelist(): array
+    public function metaAllowlist(): array
     {
         return [];
     }

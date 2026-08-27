@@ -6,8 +6,8 @@
  *  - Upload novo: 'add_attachment' (dispara só após arquivo gravado e post
  *    inserido — seguro por construção);
  *  - Edição editorial (title/alt/caption/description): 'attachment_updated' +
- *    meta da whitelist curta (_wp_attached_file, _wp_attachment_image_alt) —
- *    coberto pelo Hooks do P3 via whitelist do adapter registrado;
+ *    meta da allowlist curta (_wp_attached_file, _wp_attachment_image_alt) —
+ *    coberto pelo Hooks do P3 via allowlist do adapter registrado;
  *  - E2: 'wp_update_attachment_metadata' NUNCA é registrado (regeneração não
  *    é edição — inclui a regeneração do próprio apply);
  *  - Deleção: 'delete_attachment' → tombstone (§A.7 — metadado; bytes ficam
@@ -55,7 +55,7 @@ final class MediaHooks
         add_action('attachment_updated', [$this, 'onAttachmentUpdated']);
         add_action('delete_attachment', [$this, 'onDeleteAttachment']);
 
-        // Meta editorial da whitelist curta (§A.2.4): _wp_attached_file e
+        // Meta editorial da allowlist curta (§A.2.4): _wp_attached_file e
         // _wp_attachment_image_alt — o Hooks do P3 exclui attachments (🟡1);
         // alt/substituição de arquivo entram por aqui.
         add_action('added_post_meta', [$this, 'onAttachmentMetaChanged'], 10, 3);
@@ -94,7 +94,7 @@ final class MediaHooks
     }
 
     /**
-     * Meta da whitelist curta de attachments (§A.2.4): alt e substituição de
+     * Meta da allowlist curta de attachments (§A.2.4): alt e substituição de
      * arquivo (plugins "replace media" mudam _wp_attached_file). Regeneração
      * de metadata NÃO passa aqui (E2 — o hook dela nunca é registrado).
      * Assinatura real: ($meta_id, $object_id, $meta_key).

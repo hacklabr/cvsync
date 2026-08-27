@@ -5,7 +5,7 @@
  * Cobre page, CPTs configurados, wp_block, wp_template, wp_template_part e
  * wp_navigation: mesmo pipeline (frontmatter + corpo de blocos byte-a-byte),
  * configuração injetada pelo AdapterRegistry (diretório, extensão, statuses,
- * whitelist de meta, taxonomias identitárias) — o conjunto versionado nunca
+ * allowlist de meta, taxonomias identitárias) — o conjunto versionado nunca
  * é hardcoded (§3.2).
  *
  * Casos especiais do layout §4.1:
@@ -31,7 +31,7 @@ class PostAdapter extends AbstractPostAdapter
 {
     /**
      * @param list<string> $statuses
-     * @param list<string> $metaWhitelist
+     * @param list<string> $metaAllowlist
      * @param list<string> $identityTaxonomies
      */
     public function __construct(
@@ -42,7 +42,7 @@ class PostAdapter extends AbstractPostAdapter
         private readonly string $directory,
         private readonly string $extension,
         private readonly array $statusesConfig,
-        private readonly array $metaWhitelistConfig,
+        private readonly array $metaAllowlistConfig,
         private readonly array $identityTaxonomiesConfig,
     ) {
         parent::__construct($state, $resolver, $paths);
@@ -68,9 +68,9 @@ class PostAdapter extends AbstractPostAdapter
         return $this->extension;
     }
 
-    public function metaWhitelist(): array
+    public function metaAllowlist(): array
     {
-        return $this->metaWhitelistConfig;
+        return $this->metaAllowlistConfig;
     }
 
     public function identityTaxonomies(): array

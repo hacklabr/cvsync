@@ -7,7 +7,7 @@
  *     wp_is_post_revision() (+ DOING_AUTOSAVE, WP_IMPORTING, CVSYNC_IMPORTING
  *     via ImportGuard). PROIBIDO filtrar por post_status cru (E3/§A.2.3 —
  *     'inherit' cru silenciaria todos os attachments);
- *  2. Meta: dirty só se a chave ∈ whitelist do adapter do post type;
+ *  2. Meta: dirty só se a chave ∈ allowlist do adapter do post type;
  *     exclusões permanentes '_cvsync_*' e '_edit_last'/'_edit_lock' (§5.4);
  *  3. E2: o hook 'wp_update_attachment_metadata' NUNCA é registrado
  *     (regeneração de thumbnails não é edição);
@@ -156,7 +156,7 @@ final class Hooks
     }
 
     /**
-     * added/updated/deleted_post_meta — filtrados pela whitelist (§8.1).
+     * added/updated/deleted_post_meta — filtrados pela allowlist (§8.1).
      * Assinatura real: ($meta_id, $object_id, $meta_key).
      */
     public function onMetaChanged(mixed $metaId, int $objectId, string $metaKey): void
@@ -172,7 +172,7 @@ final class Hooks
             return; // 🟡1: meta de attachment (alt/attached_file) é do MediaHooks
         }
         $adapter = $this->adapters->forPostType($post->post_type);
-        if ($adapter === null || !in_array($metaKey, $adapter->metaWhitelist(), true)) {
+        if ($adapter === null || !in_array($metaKey, $adapter->metaAllowlist(), true)) {
             return;
         }
 
@@ -331,7 +331,7 @@ final class Hooks
         }
     }
 
-    /** Term meta da whitelist (B.2.4) — alt/thumbnail de termos. Assinatura: ($meta_id, $term_id, $meta_key). */
+    /** Term meta da allowlist (B.2.4) — alt/thumbnail de termos. Assinatura: ($meta_id, $term_id, $meta_key). */
     public function onTermMetaChanged(mixed $metaId, int $termId, string $metaKey): void
     {
         if ($this->guard->isImporting() || str_starts_with($metaKey, '_cvsync_')) {
@@ -342,7 +342,7 @@ final class Hooks
             return;
         }
         $adapter = $this->adapters->forTaxonomy($term->taxonomy);
-        if ($adapter === null || !in_array($metaKey, $adapter->metaWhitelist(), true)) {
+        if ($adapter === null || !in_array($metaKey, $adapter->metaAllowlist(), true)) {
             return;
         }
 

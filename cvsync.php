@@ -339,7 +339,7 @@ function cvsync_activate(): void
  * Estágio 0 (B.6.2 — a ordem interna attachments→termos é garantida pelo
  * byStage() do registry, que pós-ordena o estágio 0). Construção: UM adapter
  * por taxonomia — assinatura real do CMS: (state, resolver, paths, taxonomy,
- * dir, metaWhitelist), com defaults derivados idênticos aos do registry.
+ * dir, metaAllowlist), com defaults derivados idênticos aos do registry.
  *
  * Degradação graciosa: sem a classe, nada muda. Se o filtro optou por
  * taxonomias e o componente falta, sinaliza via error_log (nunca silencioso).
@@ -368,7 +368,7 @@ function cvsync_register_term_adapter(\CVSync\Cli\Container $container): void
         return;
     }
 
-    $whitelistDefault = ['thumbnail_id'];
+    $allowlistDefault = ['thumbnail_id'];
     foreach ($missing as $taxonomy) {
         try {
             $container->adapters->register(
@@ -378,7 +378,7 @@ function cvsync_register_term_adapter(\CVSync\Cli\Container $container): void
                     $container->paths,
                     $taxonomy,
                     str_replace(['_', '.'], '-', $taxonomy) . 's', // 🟡B4: dir default sanitizado (idem registry)
-                    $whitelistDefault
+                    $allowlistDefault
                 ),
                 0
             );
