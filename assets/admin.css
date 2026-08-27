@@ -1,0 +1,260 @@
+/**
+ * CVSync — admin.css
+ * Prefixo exclusivo cvsync-* · zero build · só carrega nas telas do plugin.
+ * Escala de espaçamento 4/8px; texto secundário #757575 (AA: 4.6:1 sobre #fff).
+ */
+
+.cvsync-admin {
+	--cvsync-sp-1: 4px;   /* escala 4/8 */
+	--cvsync-sp-2: 8px;
+	--cvsync-sp-3: 12px;
+	--cvsync-sp-4: 16px;
+	--cvsync-sp-5: 24px;
+	--cvsync-sp-6: 32px;
+
+	--cvsync-color-text:  #1d2327;  /* texto primário (padrão WP)   */
+	--cvsync-color-muted: #757575;  /* texto secundário — AA 4.6:1  */
+	--cvsync-color-border: #c3c4c7; /* borda padrão WP              */
+	--cvsync-color-bg-soft: #f6f7f7;
+
+	--cvsync-radius: 4px;
+
+	color: var(--cvsync-color-text);
+	max-width: 980px; /* tela de config não precisa de 1600px de linha */
+}
+
+/* ---------- Cards (agrupamento visual por seção) ---------- */
+
+.cvsync-card {
+	background: #fff;
+	border: 1px solid var(--cvsync-color-border);
+	border-radius: var(--cvsync-radius);
+	padding: var(--cvsync-sp-4) var(--cvsync-sp-5);
+	margin: var(--cvsync-sp-4) 0 var(--cvsync-sp-5);
+}
+
+.cvsync-card__title {
+	margin: 0 0 var(--cvsync-sp-3);
+	padding: 0;
+	border: 0;
+	font-size: 14px;
+	font-weight: 600;
+	line-height: 1.4;
+}
+
+/* Sub-blocos dentro do card de escopo (Importações, Taxonomias...) */
+.cvsync-admin h2.title {
+	margin: var(--cvsync-sp-5) 0 var(--cvsync-sp-2);
+	padding-top: var(--cvsync-sp-4);
+	border-top: 1px solid #f0f0f1;
+	font-size: 13px;
+}
+
+.cvsync-admin h2.title:first-of-type { border-top: 0; padding-top: 0; margin-top: 0; }
+
+/* ---------- Ambiente (estado persistente — não é notice) ---------- */
+
+.cvsync-env--prod { border-left: 4px solid #d63638; }
+
+.cvsync-env__line {
+	display: flex;
+	align-items: center;
+	gap: var(--cvsync-sp-2);
+	flex-wrap: wrap;
+	margin: 0 0 var(--cvsync-sp-2);
+}
+
+/* Saúde compacta (schema / HEAD / último apply) */
+.cvsync-health {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--cvsync-sp-1) var(--cvsync-sp-4);
+	margin: 0 0 var(--cvsync-sp-2);
+	font-size: 12px;
+	color: var(--cvsync-color-muted);
+}
+
+.cvsync-health__item--ok    { color: #1a6b33; }
+.cvsync-health__item--bad   { color: #a12d2d; font-weight: 600; }
+
+/* Badge por ambiente — par claro/escuro, todos ≥ 4.5:1 */
+.cvsync-badge {
+	display: inline-block;
+	padding: 1px 10px;
+	border-radius: 999px;
+	font-size: 12px;
+	font-weight: 600;
+	line-height: 20px;
+	letter-spacing: .02em;
+	text-transform: uppercase;
+}
+.cvsync-badge--local   { background: #e5f2e8; color: #1a6b33; }
+.cvsync-badge--staging { background: #e5eff8; color: #135e96; }
+.cvsync-badge--homolog { background: #fcf0dd; color: #7a4f00; }
+.cvsync-badge--prod    { background: #fdeaea; color: #a12d2d; }
+
+/* ---------- Hints, motivos, direções ---------- */
+
+.cvsync-hint {
+	margin: var(--cvsync-sp-1) 0;
+	color: var(--cvsync-color-muted);
+	font-size: 12px;
+	line-height: 1.5;
+}
+
+.cvsync-hint .dashicons {
+	font-size: 16px;
+	width: 16px;
+	height: 16px;
+	vertical-align: text-bottom;
+}
+
+.cvsync-reason {
+	display: block;
+	margin: 2px 0 0 24px; /* alinha com o texto após o checkbox */
+	font-size: 12px;
+	color: var(--cvsync-color-muted);
+}
+
+/* Aviso operacional destacado (ex.: auto-import inoperante — P-2) */
+.cvsync-warn {
+	margin: var(--cvsync-sp-2) 0;
+	padding: var(--cvsync-sp-3);
+	border-left: 4px solid #d63638;
+	background: var(--cvsync-color-bg-soft);
+	border-radius: var(--cvsync-radius);
+	font-size: 12px;
+}
+
+/* ---------- Checklists (taxonomias / post types) ---------- */
+
+.cvsync-checklist {
+	border: 0;
+	margin: var(--cvsync-sp-2) 0 var(--cvsync-sp-3);
+	padding: 0;
+}
+
+.cvsync-checklist ul {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+	gap: var(--cvsync-sp-2) var(--cvsync-sp-5);
+	margin: 0;
+}
+
+.cvsync-checklist li { margin: 0; line-height: 1.8; }
+
+.cvsync-checklist--locked,
+.cvsync-checklist--locked label { color: var(--cvsync-color-muted); }
+
+.cvsync-checklist code { color: var(--cvsync-color-muted); font-size: 11px; }
+
+/* ---------- Linhas de ação (Aplicar / Exportar / Verificar) ---------- */
+
+.cvsync-action {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--cvsync-sp-3) var(--cvsync-sp-5);
+	align-items: flex-start;
+	padding: var(--cvsync-sp-3) 0;
+	border-top: 1px solid #f0f0f1;
+}
+
+.cvsync-action:first-of-type { border-top: 0; }
+
+.cvsync-action__main { flex: 1 1 300px; min-width: 0; }
+
+.cvsync-action__name {
+	display: flex;
+	align-items: baseline;
+	gap: var(--cvsync-sp-2);
+	margin: 0;
+}
+
+.cvsync-action__dir {
+	font-size: 12px;
+	color: var(--cvsync-color-muted);
+	white-space: nowrap;
+}
+
+.cvsync-action__ctl { flex: 0 0 auto; }
+
+.cvsync-action__ctl .button[disabled] { opacity: .55; cursor: not-allowed; }
+
+/* ---------- Transferência (.zip) ---------- */
+
+.cvsync-io {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--cvsync-sp-3) var(--cvsync-sp-5);
+	align-items: flex-end;
+}
+
+.cvsync-file { display: flex; flex-direction: column; gap: var(--cvsync-sp-1); }
+
+.cvsync-file__label { font-weight: 600; }
+
+/* ---------- Notices com lista de detalhe ---------- */
+
+.cvsync-notice-detail {
+	margin: var(--cvsync-sp-1) 0 var(--cvsync-sp-2) var(--cvsync-sp-5);
+	list-style: disc;
+}
+
+.cvsync-notice-detail code { word-break: break-all; }
+
+/* ---------- Empty state ---------- */
+
+.cvsync-empty {
+	margin: var(--cvsync-sp-2) 0;
+	padding: var(--cvsync-sp-4);
+	background: var(--cvsync-color-bg-soft);
+	border: 1px dashed var(--cvsync-color-border);
+	border-radius: var(--cvsync-radius);
+	color: var(--cvsync-color-muted);
+}
+
+/* ---------- Tables (Log e Conflitos) ---------- */
+
+.cvsync-admin table.widefat { margin-top: var(--cvsync-sp-2); }
+
+.cvsync-code-wrap code { word-break: break-all; }
+
+/* ---------- Copy-button (handoffs CLI) ---------- */
+
+.cvsync-copy {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--cvsync-sp-1);
+	margin: 0;
+	vertical-align: middle;
+}
+
+.cvsync-copy code { word-break: break-all; }
+
+/* ---------- Foco visível (safeguard dentro dos componentes) ---------- */
+
+.cvsync-admin .cvsync-checklist input[type="checkbox"]:focus-visible,
+.cvsync-admin .cvsync-action__ctl .button:focus-visible,
+.cvsync-admin .cvsync-copy .button:focus-visible {
+	outline: 2px solid #3582c4;
+	outline-offset: 1px;
+}
+
+/* ---------- Responsivo (breakpoint padrão do admin WP) ---------- */
+
+@media (max-width: 782px) {
+	.cvsync-admin { max-width: none; }
+
+	.cvsync-card {
+		padding: var(--cvsync-sp-3) var(--cvsync-sp-4);
+		margin-bottom: var(--cvsync-sp-4);
+	}
+
+	.cvsync-checklist ul { grid-template-columns: 1fr; }
+
+	.cvsync-action { flex-direction: column; align-items: stretch; }
+	.cvsync-action__ctl { align-self: flex-start; }
+
+	.cvsync-io { flex-direction: column; align-items: stretch; }
+	.cvsync-file input[type="file"] { max-width: 100%; }
+}

@@ -95,6 +95,8 @@ final class IoHandlers
             @set_time_limit(120);
         }
 
+        $started = microtime(true);
+
         try {
             $container = Cli::container();
             $runner    = new \CVSync\Cli\ApplyRunner($container);
@@ -120,7 +122,11 @@ final class IoHandlers
             $report = $runner->run($ctx);
 
             $ok = ($report['failed'] + $report['skipped_locked']) === 0;
-            $detail = array_slice((array) $report['errors'], 0, 10);
+            $detail = [
+                // P-1 (parcial): escala do lote enquanto não há progresso real.
+                sprintf('Concluído em %ds.', (int) round(microtime(true) - $started)),
+            ];
+            $detail = [...$detail, ...array_slice((array) $report['errors'], 0, 10)];
             if ($report['skipped_locked'] > 0) {
                 $detail[] = sprintf('%d entidade(s) com editor lock ativo — puladas (retry natural; §8.4).', (int) $report['skipped_locked']);
             }
@@ -141,7 +147,21 @@ final class IoHandlers
                     (int) $report['conflicts_file'],
                     (int) $report['failed']
                 ),
-                $detail
+                $detail,
+                // P-5/P-13 — números para a UI escolher o nível do notice;
+                // snapshot pré-apply quando existir (null em SAPI web — a UI
+                // deve avisar "sem snapshot neste canal").
+                [
+                    'applied'        => (int) $report['applied'],
+                    'exported'       => (int) $report['exported'],
+                    'skipped'        => (int) $report['skipped'],
+                    'conflicts'      => (int) $report['conflicts_db'] + (int) $report['conflicts_file'],
+                    'failed'         => (int) $report['failed'],
+                    'skipped_locked' => (int) $report['skipped_locked'],
+                    'pending_ref'    => (int) $report['pending_ref'],
+                    'duration_s'     => (int) round(microtime(true) - $started),
+                    'snapshot'       => $report['snapshot'],
+                ]
             );
         } catch (\Throwable $e) {
             self::storeAction('apply', false, 'Falha no apply.', [$e->getMessage()]);
@@ -381,9 +401,16 @@ final class IoHandlers
             'applied'   => (int) $report['applied'] + (int) $report['exported'],
             'skipped'   => (int) $report['skipped'],
             'conflicts' => (int) $report['conflicts_db'] + (int) $report['conflicts_file'],
+            'failed'    => (int) $report['failed'],
+            'skipped_locked' => (int) $report['skipped_locked'],
+            'pending_ref'    => (int) $report['pending_ref'],
             'errors'    => $errors,
             'ok'        => $report['failed'] === 0,
             'detail'    => sprintf('Zip: %d arquivos (%d entidades). Backup pré-swap: %s', $extracted['files'], $extracted['entities'], $extracted['backup']),
+            // P-4: backup como CHAVE própria (path relativo ao pai do content
+            // dir — a UI renderiza o caminho de recuperação, hoje invisível).
+            'backup'    => $extracted['backup'],
+            'snapshot'  => $report['snapshot'],
         ]);
         self::redirectBack();
     }
@@ -432,19 +459,26 @@ final class IoHandlers
 
     /**
      * Resultado dos botões de ação (contrato canônico): transient
-     * `cvsync_action_result`, shape ['action','ok','summary','detail'[]],
-     * TTL 120s — a tela consome + deleta.
+     * `cvsync_action_result`, shape ['action','ok','summary','detail'[]] +
+     * números opcionais em 'counts' (P-5/P-13 — a UI escolhe o nível do
+     * notice por eles), TTL 120s — a tela consome + deleta.
      *
      * @param list<string> $detail
+     * @param array<string, mixed>|null $counts
      */
-    private static function storeAction(string $action, bool $ok, string $summary, array $detail): void
+    private static function storeAction(string $action, bool $ok, string $summary, array $detail, ?array $counts = null): void
     {
-        set_transient('cvsync_action_result', [
+        $payload = [
             'action'  => $action,
             'ok'      => $ok,
             'summary' => $summary,
             'detail'  => $detail,
-        ], 120);
+        ];
+        if (null !== $counts) {
+            $payload['counts'] = $counts;
+        }
+
+        set_transient('cvsync_action_result', $payload, 120);
     }
 
     /** Redirect dos botões de ação com o marker `?cvsync_action=1`. */

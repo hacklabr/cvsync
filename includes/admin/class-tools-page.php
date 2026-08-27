@@ -1,9 +1,13 @@
 <?php
 /**
- * ToolsPage — tela mínima em Ferramentas > CVSync (§10.1: manage_options).
+ * ToolsPage — tela em Ferramentas > CVSync (§10.1: manage_options).
  * Read-only: lista os últimos registros do audit log e os conflitos
  * pendentes, com apontadores para os comandos CLI (§8.3). Nenhuma mutação
  * via admin — resolução é sempre via CLI (trust de shell, §10.1).
+ *
+ * Refatoração UX (F7/F8 + Guardian fase 1): seções em cards, empty states
+ * com próximo passo, handoffs CLI com botão de copiar (a mutação continua
+ * exclusivamente no CLI — normativo).
  *
  * @package CVSync\Admin
  */
@@ -33,6 +37,7 @@ final class ToolsPage
     public function register(): void
     {
         add_action('admin_menu', [$this, 'registerMenu']);
+        add_action('admin_enqueue_scripts', [SettingsPage::class, 'enqueueAssets']);
 
         // Aba "Configuração" (SettingsPage) — mesma tela pai (Ferramentas),
         // option única `cvsync_settings` (contrato central).
@@ -57,12 +62,13 @@ final class ToolsPage
             wp_die(esc_html__('Sem permissão.', 'cvsync'));
         }
 
-        echo '<div class="wrap">';
+        echo '<div class="wrap cvsync-admin">';
         printf('<h1>%s</h1>', esc_html__('CVSync — Log e Conflitos', 'cvsync'));
         SettingsPage::renderTabs('log');
 
         $this->renderConflicts();
         $this->renderLog();
+        $this->renderCopyScript();
 
         echo '</div>';
     }
@@ -73,17 +79,25 @@ final class ToolsPage
 
     private function renderConflicts(): void
     {
-        printf('<h2>%s</h2>', esc_html__('Conflitos pendentes', 'cvsync'));
+        echo '<section class="cvsync-card" aria-labelledby="cvsync-h-conflicts">';
+        printf('<h2 class="cvsync-card__title" id="cvsync-h-conflicts">%s</h2>', esc_html__('Conflitos pendentes', 'cvsync'));
 
         try {
             $conflicts = $this->conflicts->listUnresolved(null, self::CONFLICT_LIMIT);
         } catch (\Throwable) {
-            printf('<p>%s</p>', esc_html__('Tabela de conflitos indisponível (schema pendente?).', 'cvsync'));
+            printf('<p class="cvsync-empty">%s</p>', esc_html__('Tabela de conflitos indisponível (schema pendente?) — rode `wp sync verify` ou a ativação do plugin para instalar o schema.', 'cvsync'));
+            echo '</section>';
+
             return;
         }
 
         if ([] === $conflicts) {
-            printf('<p>%s</p>', esc_html__('Nenhum conflito pendente.', 'cvsync'));
+            printf(
+                '<p class="cvsync-empty">%s</p>',
+                esc_html__('Nenhum conflito pendente — banco e repositório convergentes no último checkpoint. Divergências registradas aparecem aqui até a resolução via CLI.', 'cvsync')
+            );
+            echo '</section>';
+
             return;
         }
 
@@ -110,25 +124,34 @@ final class ToolsPage
         }
 
         echo '</tbody></table>';
-        printf(
-            '<p class="description">%s</p>',
-            esc_html__('Inspeção e resolução via CLI: `wp sync conflicts` → `wp sync conflict show <id>` → `wp sync resolve <entity> --keep=db|file` (§7.4).', 'cvsync')
-        );
+        printf('<p class="cvsync-hint">%s</p>', esc_html__('Inspeção e resolução via CLI (§7.4):', 'cvsync'));
+        $this->renderCopyableCommand('wp sync conflicts');
+        $this->renderCopyableCommand('wp sync conflict show <id>');
+        $this->renderCopyableCommand('wp sync resolve <entity> --keep=db|file');
+        echo '</section>';
     }
 
     private function renderLog(): void
     {
-        printf('<h2>%s</h2>', esc_html__('Últimos registros do audit log', 'cvsync'));
+        echo '<section class="cvsync-card" aria-labelledby="cvsync-h-log">';
+        printf('<h2 class="cvsync-card__title" id="cvsync-h-log">%s</h2>', esc_html__('Últimos registros do audit log', 'cvsync'));
 
         try {
             $entries = $this->log->recent(self::LOG_LIMIT);
         } catch (\Throwable) {
-            printf('<p>%s</p>', esc_html__('Tabela de log indisponível (schema pendente?).', 'cvsync'));
+            printf('<p class="cvsync-empty">%s</p>', esc_html__('Tabela de log indisponível (schema pendente?) — rode a ativação do plugin ou `wp sync verify` para instalar o schema.', 'cvsync'));
+            echo '</section>';
+
             return;
         }
 
         if ([] === $entries) {
-            printf('<p>%s</p>', esc_html__('Nenhum registro.', 'cvsync'));
+            printf(
+                '<p class="cvsync-empty">%s</p>',
+                esc_html__('Nenhum registro ainda — rode um apply/export pelo painel ou CLI (wp sync apply / wp sync export) e o audit trail aparece aqui.', 'cvsync')
+            );
+            echo '</section>';
+
             return;
         }
 
@@ -156,9 +179,62 @@ final class ToolsPage
         }
 
         echo '</tbody></table>';
+        printf('<p class="cvsync-hint">%s</p>', esc_html__('Mais contexto via CLI (§11.1):', 'cvsync'));
+        $this->renderCopyableCommand('wp sync log --last=50');
+        $this->renderCopyableCommand('wp sync blame <post_type:slug>');
+        $this->renderCopyableCommand('wp sync status');
+        echo '</section>';
+    }
+
+    // ------------------------------------------------------------------
+    // Copy-button (handoff CLI — mutação permanece exclusivamente no CLI)
+    // ------------------------------------------------------------------
+
+    private function renderCopyableCommand(string $command): void
+    {
         printf(
-            '<p class="description">%s</p>',
-            esc_html__('Mais contexto via CLI: `wp sync log --last=N`, `wp sync blame <id|slug>`, `wp sync status` (§11.1).', 'cvsync')
+            '<p class="cvsync-copy"><code>%s</code> <button type="button" class="button button-small" data-cvsync-copy="%s" aria-label="%s">%s</button></p>',
+            esc_html($command),
+            esc_attr($command),
+            sprintf(
+                /* translators: %s: comando CLI. */
+                esc_html__('Copiar comando %s', 'cvsync'),
+                esc_html($command)
+            ),
+            esc_html__('Copiar', 'cvsync')
         );
+    }
+
+    /** JS mínimo: copiar comandos do handoff (clipboard API, sem dependências). */
+    private function renderCopyScript(): void
+    {
+        ?>
+        <script>
+        (function () {
+            'use strict';
+            document.querySelectorAll('[data-cvsync-copy]').forEach(function (btn) {
+                btn.addEventListener('click', function () {
+                    var cmd = btn.getAttribute('data-cvsync-copy');
+                    var done = function () {
+                        var old = btn.textContent;
+                        btn.textContent = '<?php echo esc_js(__('Copiado!', 'cvsync')); ?>';
+                        window.setTimeout(function () { btn.textContent = old; }, 1500);
+                    };
+                    if (navigator.clipboard && navigator.clipboard.writeText) {
+                        navigator.clipboard.writeText(cmd).then(done, done);
+                    } else {
+                        var ta = document.createElement('textarea');
+                        ta.value = cmd;
+                        document.body.appendChild(ta);
+                        ta.select();
+                        document.execCommand('copy');
+                        document.body.removeChild(ta);
+                        done();
+                    }
+                });
+            });
+        })();
+        </script>
+        <?php
     }
 }

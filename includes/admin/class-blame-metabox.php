@@ -112,7 +112,7 @@ final class BlameMetabox
 
         if (null !== $applied->filePath && '' !== $applied->filePath) {
             printf(
-                '<p class="description"><code>%s</code></p>',
+                '<p class="description cvsync-code-wrap"><code>%s</code></p>',
                 esc_html($applied->filePath)
             );
         }

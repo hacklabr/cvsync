@@ -123,6 +123,42 @@ final class Triggers
     // ------------------------------------------------------------------
 
     /**
+     * Saúde do check passivo HEAD-hash (P-2 da revisão de jornada) — sinal
+     * para a UI decidir o nível do notice: `auto_import` ON + `.git` ausente
+     * (caso real de container sem o mount) = auto-import INOPERANTE em
+     * silêncio; a tela consulta isto e avisa em vez de deixar a promessa do
+     * toggle morrer sem sinal. Read-only, zero side effects, O(1).
+     *
+     * @return array{head_readable: bool, head: ?string, last_applied: ?string, diverged: ?bool}
+     *         diverged=null quando indeterminável (sem HEAD legível ou state
+     *         sem último apply registrado).
+     */
+    public static function headHealth(): array
+    {
+        $head = self::readHead(self::repoRoot());
+
+        if (null === $head) {
+            return ['head_readable' => false, 'head' => null, 'last_applied' => null, 'diverged' => null];
+        }
+
+        $lastApplied = null;
+        try {
+            // Estado é global ($wpdb) — a instância direta lê sem depender do
+            // container do CLI. Falha de banco → null (indeterminado, não fatal).
+            $lastApplied = (new \CVSync\Storage\StateStore($GLOBALS['wpdb'] ?? null))->lastAppliedHead();
+        } catch (\Throwable) {
+            $lastApplied = null;
+        }
+
+        return [
+            'head_readable' => true,
+            'head'          => $head,
+            'last_applied'  => $lastApplied,
+            'diverged'      => null !== $lastApplied ? $head !== $lastApplied : null,
+        ];
+    }
+
+    /**
      * Raiz do repositório: caminha do content dir para cima procurando `.git`
      * (diretório ou gitfile — worktrees). Fallback: pai do content dir
      * (§4.1 — content/ vive na raiz do repo). Não basta dirname(): com
