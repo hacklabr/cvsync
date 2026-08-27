@@ -44,6 +44,13 @@ final class SettingsPage
     private const IMPORT_FLAG  = 'cvsync_import';
     private const IMPORT_TRANSIENT = 'cvsync_import_result';
 
+    private const RUN_NONCE    = 'cvsync_run';
+    private const RUN_APPLY    = 'cvsync_run_apply';
+    private const RUN_EXPORT   = 'cvsync_run_export';
+    private const RUN_VERIFY   = 'cvsync_run_verify';
+    private const RUN_FLAG     = 'cvsync_action';
+    private const RUN_TRANSIENT = 'cvsync_action_result';
+
     /** Post types versionados por default (AdapterRegistry::postTypeConfig) — sempre on. */
     private const DEFAULT_POST_TYPES = ['page', 'wp_block', 'wp_template', 'wp_template_part', 'wp_navigation'];
 
@@ -185,6 +192,7 @@ final class SettingsPage
         self::renderTabs('settings');
 
         $this->renderImportResult();
+        $this->renderActionResult();
         $this->renderUpdatedNotice();
         $this->renderEnvironmentBox();
 
@@ -199,6 +207,7 @@ final class SettingsPage
         submit_button(__('Salvar configuração', 'cvsync'));
         echo '</form>';
 
+        $this->renderActionButtons();
         $this->renderIoForms();
 
         echo '</div>';
@@ -428,6 +437,100 @@ final class SettingsPage
             '<p class="description">%s</p>',
             esc_html__('Anexos de mídia não se configuram aqui: são entidade própria (Apêndice A, escopo referenced — ver constantes CVSYNC_ATTACHMENT_*).', 'cvsync')
         );
+    }
+
+    // ------------------------------------------------------------------
+    // Ações manuais (handlers admin-post cvsync_run_* — DevOps)
+    // ------------------------------------------------------------------
+
+    private function renderActionButtons(): void
+    {
+        $settings = self::settings();
+        $isProd   = Environment::PROD === Environment::current();
+
+        echo '<h2 class="title">' . esc_html__('Ações', 'cvsync') . '</h2>';
+        printf(
+            '<p class="description">%s</p>',
+            esc_html__('Execução pontual dos fluxos do cvsync a partir da tela — mesmos gates da matriz de ambientes. O resultado aparece no topo da tela após a conclusão.', 'cvsync')
+        );
+
+        // Aplicar agora (repo → banco) — prod: matriz; lock_imports: recusa.
+        $applyLocked = $isProd || $settings['lock_imports'];
+        echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" style="display:inline-block;margin-right:24px;vertical-align:top;">';
+        printf('<input type="hidden" name="action" value="%s">', esc_attr(self::RUN_APPLY));
+        wp_nonce_field(self::RUN_NONCE);
+        submit_button(__('Aplicar agora', 'cvsync'), 'primary', 'submit', false, $applyLocked ? ['disabled' => true] : []);
+        echo '</form>';
+        printf(
+            '<p class="description">%s</p>',
+            $applyLocked
+                ? ($isProd
+                    ? esc_html__('Aplicar agora: desabilitado em produção (matriz §7.3 — apply manual exige CLI com triplo fator: --force + TTY + CVSYNC_ALLOW_PROD_APPLY).', 'cvsync')
+                    : esc_html__('Aplicar agora: bloqueado — "Bloquear importações neste ambiente" está ativo.', 'cvsync'))
+                : esc_html__('Aplicar agora: aplica o conteúdo do repositório no banco (repo → banco).', 'cvsync')
+        );
+
+        // Exportar agora (banco → repo).
+        echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" style="display:inline-block;margin-right:24px;vertical-align:top;">';
+        printf('<input type="hidden" name="action" value="%s">', esc_attr(self::RUN_EXPORT));
+        wp_nonce_field(self::RUN_NONCE);
+        submit_button(__('Exportar agora', 'cvsync'), 'secondary', 'submit', false);
+        echo '</form>';
+        printf(
+            '<p class="description">%s</p>',
+            esc_html__('Exportar agora: exporta o conteúdo do banco para os arquivos canônicos (banco → repo).', 'cvsync')
+        );
+
+        // Verificar agora (read-only).
+        echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" style="display:inline-block;vertical-align:top;">';
+        printf('<input type="hidden" name="action" value="%s">', esc_attr(self::RUN_VERIFY));
+        wp_nonce_field(self::RUN_NONCE);
+        submit_button(__('Verificar agora', 'cvsync'), 'secondary', 'submit', false);
+        echo '</form>';
+        printf(
+            '<p class="description">%s</p>',
+            esc_html__('Verificar agora: diagnóstico read-only — recalcula hashes dos dois lados e reporta divergências (o verify do CLI, sem escrever).', 'cvsync')
+        );
+    }
+
+    /**
+     * Resultado das ações manuais (contrato canônico): transient
+     * cvsync_action_result = ['action' => 'apply'|'export'|'verify',
+     * 'ok' => bool, 'summary' => string, 'detail' => list<string>].
+     */
+    private function renderActionResult(): void
+    {
+        if ('1' !== ($_GET[self::RUN_FLAG] ?? '')) {
+            return;
+        }
+
+        $result = get_transient(self::RUN_TRANSIENT);
+        delete_transient(self::RUN_TRANSIENT);
+
+        if (! is_array($result)) {
+            return; // sem resultado (redirect direto) — nada a renderizar
+        }
+
+        $action  = isset($result['action']) ? (string) $result['action'] : '';
+        $ok      = ! empty($result['ok']);
+        $summary = isset($result['summary']) ? (string) $result['summary'] : '';
+        $detail  = isset($result['detail']) && is_array($result['detail'])
+            ? array_values(array_filter(array_map('strval', $result['detail']))) : [];
+
+        $labels  = ['apply' => __('Aplicar', 'cvsync'), 'export' => __('Exportar', 'cvsync'), 'verify' => __('Verificar', 'cvsync')];
+        $class   = $ok ? 'notice-success' : 'notice-warning';
+
+        printf('<div class="notice %s is-dismissible"><p><strong>%s:</strong> %s</p>', esc_attr($class), esc_html($labels[$action] ?? __('Ação', 'cvsync')), esc_html($summary));
+
+        if ([] !== $detail) {
+            echo '<ul style="margin:6px 0 6px 18px;list-style:disc;">';
+            foreach ($detail as $line) {
+                printf('<li>%s</li>', esc_html($line));
+            }
+            echo '</ul>';
+        }
+
+        echo '</div>';
     }
 
     // ------------------------------------------------------------------

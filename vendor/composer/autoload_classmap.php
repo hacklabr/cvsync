@@ -44,6 +44,7 @@ return array(
     'CVSync\\Cli\\CommandStatus' => $baseDir . '/includes/cli/class-command-status.php',
     'CVSync\\Cli\\CommandVerify' => $baseDir . '/includes/cli/class-command-verify.php',
     'CVSync\\Cli\\Container' => $baseDir . '/includes/cli/class-cli.php',
+    'CVSync\\Cli\\VerifyRunner' => $baseDir . '/includes/cli/class-verify-runner.php',
     'CVSync\\ContentIoException' => $baseDir . '/includes/class-content-io.php',
     'CVSync\\Engine\\CanonicalDocument' => $baseDir . '/includes/engine/CanonicalDocument.php',
     'CVSync\\Engine\\Canonicalizer' => $baseDir . '/includes/engine/Canonicalizer.php',

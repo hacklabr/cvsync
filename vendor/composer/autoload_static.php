@@ -77,6 +77,7 @@ class ComposerStaticInitd7b741e8c3ccb11b5c84a2b15831ab72
         'CVSync\\Cli\\CommandStatus' => __DIR__ . '/../..' . '/includes/cli/class-command-status.php',
         'CVSync\\Cli\\CommandVerify' => __DIR__ . '/../..' . '/includes/cli/class-command-verify.php',
         'CVSync\\Cli\\Container' => __DIR__ . '/../..' . '/includes/cli/class-cli.php',
+        'CVSync\\Cli\\VerifyRunner' => __DIR__ . '/../..' . '/includes/cli/class-verify-runner.php',
         'CVSync\\ContentIoException' => __DIR__ . '/../..' . '/includes/class-content-io.php',
         'CVSync\\Engine\\CanonicalDocument' => __DIR__ . '/../..' . '/includes/engine/CanonicalDocument.php',
         'CVSync\\Engine\\Canonicalizer' => __DIR__ . '/../..' . '/includes/engine/Canonicalizer.php',

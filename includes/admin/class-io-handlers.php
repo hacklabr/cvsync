@@ -53,15 +53,215 @@ final class IoHandlers
     /** Nonce/action guard compartilhado pelos dois forms. */
     private const NONCE = 'cvsync_io';
 
+    /** Nonce/action guard dos botões de ação manual (Aplicar/Exportar/Verificar agora). */
+    private const RUN_NONCE = 'cvsync_run';
+
+    /** Teto de entidades dos botões manuais (mesma regra do import zip). */
+    private const MAX_ENTITIES = 50;
+
     public static function register(): void
     {
         add_action('admin_post_cvsync_export_zip', [self::class, 'handleExport']);
         add_action('admin_post_cvsync_import_zip', [self::class, 'handleImport']);
+        add_action('admin_post_cvsync_run_apply', [self::class, 'handleRunApply']);
+        add_action('admin_post_cvsync_run_export', [self::class, 'handleRunExport']);
+        add_action('admin_post_cvsync_run_verify', [self::class, 'handleRunVerify']);
+    }
+
+    // ------------------------------------------------------------------
+    // Botões de ação manual — Aplicar / Exportar / Verificar agora
+    // (contrato canônico: transient cvsync_action_result, redirect com
+    //  ?cvsync_action=1; formas idênticas aos handlers zip)
+    // ------------------------------------------------------------------
+
+    /**
+     * `wp sync apply` pelo painel (trigger 'admin-action').
+     *
+     * Gates: prod RECUSA (matriz §7.3 — wp_die 403, defesa de servidor);
+     * `lock_imports` RECUSA (transient ok=false); teto de 50 entidades de
+     * trabalho no plano (acima → "use WP-CLI"). O runner cuida da batch lock,
+     * snapshot pré-apply (em request web o Snapshot recusa por SAPI — erro
+     * registrado no detail, lote prossegue) e do updateLastAppliedHead
+     * (quando há .git/HEAD legível).
+     */
+    public static function handleRunApply(): void
+    {
+        self::assertAuthorized(self::RUN_NONCE);
+        self::refuseProd();
+        if (self::importsLocked()) {
+            return; // transient já gravado
+        }
+        if (function_exists('set_time_limit')) {
+            @set_time_limit(120);
+        }
+
+        try {
+            $container = Cli::container();
+            $runner    = new \CVSync\Cli\ApplyRunner($container);
+
+            // Teto: entidades de TRABALHO no plano (não skips/purges).
+            $ctx  = new ImportContext(trigger: 'admin-action', environment: Environment::current());
+            $git  = $runner->gitFacts();
+            $plan = $runner->computePlan($ctx, $git['head'], $container->state->lastAppliedHead(), $git['regression']);
+            $work = array_filter(
+                $plan,
+                static fn (array $item): bool => ! in_array($item['outcome']->decision, [
+                    \CVSync\Engine\Decision::Skip,
+                    \CVSync\Engine\Decision::PurgeTombstone,
+                ], true)
+            );
+            if (count($work) > self::MAX_ENTITIES) {
+                self::storeAction('apply', false, sprintf('%d entidades a processar — acima do teto da tela (%d).', count($work), self::MAX_ENTITIES), [
+                    sprintf('Use WP-CLI para lotes grandes: docker compose exec -T wordpress wp sync apply'),
+                ]);
+                self::redirectBackAction();
+            }
+
+            $report = $runner->run($ctx);
+
+            $ok = ($report['failed'] + $report['skipped_locked']) === 0;
+            $detail = array_slice((array) $report['errors'], 0, 10);
+            if ($report['skipped_locked'] > 0) {
+                $detail[] = sprintf('%d entidade(s) com editor lock ativo — puladas (retry natural; §8.4).', (int) $report['skipped_locked']);
+            }
+            if ($report['degraded'] > 0) {
+                $detail[] = sprintf('%d aplicada(s) em modo degradado (regeneração de metadata falhou — retentável; §A.5.6).', (int) $report['degraded']);
+            }
+
+            self::storeAction(
+                'apply',
+                $ok,
+                sprintf(
+                    'Applied %d, exported %d, skipped %d, conflitos auto-resolvidos %d (db: %d, file: %d), failed %d.',
+                    (int) $report['applied'],
+                    (int) $report['exported'],
+                    (int) $report['skipped'],
+                    (int) $report['conflicts_db'] + (int) $report['conflicts_file'],
+                    (int) $report['conflicts_db'],
+                    (int) $report['conflicts_file'],
+                    (int) $report['failed']
+                ),
+                $detail
+            );
+        } catch (\Throwable $e) {
+            self::storeAction('apply', false, 'Falha no apply.', [$e->getMessage()]);
+        }
+
+        self::redirectBackAction();
+    }
+
+    /**
+     * Export bulk pelo painel (trigger 'admin-action') — livre em qualquer
+     * ambiente (read-only no banco; §7.3). Teto de 50 entidades (WP-CLI acima).
+     */
+    public static function handleRunExport(): void
+    {
+        self::assertAuthorized(self::RUN_NONCE);
+        if (function_exists('set_time_limit')) {
+            @set_time_limit(120);
+        }
+
+        try {
+            $container  = Cli::container();
+            $exported   = 0;
+            $idempotent = 0;
+            $errors     = [];
+            $entities   = self::collectExportEntities($container);
+
+            if (count($entities) > self::MAX_ENTITIES) {
+                self::storeAction('export', false, sprintf('%d entidades a exportar — acima do teto da tela (%d).', count($entities), self::MAX_ENTITIES), [
+                    'Use WP-CLI para lotes grandes: docker compose exec -T wordpress wp sync export',
+                ]);
+                self::redirectBackAction();
+            }
+
+            $attachmentAdapter = $container->adapters->forPostType('attachment');
+            foreach ($entities as [$ref, $isAttachment]) {
+                if ($isAttachment && $attachmentAdapter instanceof \CVSync\Media\AttachmentAdapter) {
+                    $outcome = $attachmentAdapter->exportAttachment($ref, 'admin-action');
+                } else {
+                    $outcome = $container->exporter->export($ref, 'admin-action')?->outcome;
+                }
+                match ($outcome) {
+                    \CVSync\Storage\LogResult::Applied => $exported++,
+                    \CVSync\Storage\LogResult::Error, \CVSync\Storage\LogResult::Rejected => $errors[] = $ref->toTupleString(),
+                    null => $idempotent++, // lock fail-open (§5.8)
+                    default => $idempotent++,
+                };
+            }
+
+            self::storeAction(
+                'export',
+                [] === $errors,
+                sprintf('Export: %d exportados, %d idempotentes, %d erros (de %d entidades).', $exported, $idempotent, count($errors), count($entities)),
+                array_slice($errors, 0, 10)
+            );
+        } catch (\Throwable $e) {
+            self::storeAction('export', false, 'Falha no export.', [$e->getMessage()]);
+        }
+
+        self::redirectBackAction();
+    }
+
+    /**
+     * Verify pelo painel — livre em qualquer ambiente (read-only). Relatório
+     * do VerifyRunner (mesmo caminho do `wp sync verify`); `ok = divergências
+     * == 0 && sonda != FAIL`. Sonda PHP-off autolimita-se a CLI → em request
+     * web a sonda devolve INDETERMINADO (não trava, §A.9.2).
+     */
+    public static function handleRunVerify(): void
+    {
+        self::assertAuthorized(self::RUN_NONCE);
+        if (function_exists('set_time_limit')) {
+            @set_time_limit(120);
+        }
+
+        try {
+            $result  = (new \CVSync\Cli\VerifyRunner(Cli::container()))->compute(false);
+            $report  = $result['report'];
+            $counts  = $report['counts'];
+
+            $detail = [];
+            foreach (array_slice($report['items'], 0, 20) as $item) {
+                $detail[] = sprintf('[%s] %s — %s', $item['status'], $item['entity'], $item['detail']);
+            }
+            if (count($report['items']) > 20) {
+                $detail[] = sprintf('… e mais %d item(ns).', count($report['items']) - 20);
+            }
+            $probe = $report['security']['uploads-php-exec'];
+            if (\CVSync\Media\PhpExecProbe::INDETERMINATE === $probe['status']) {
+                $detail[] = 'uploads-php-exec INDETERMINADO em request web — rode `wp sync verify` para a sonda completa (§A.9.2).';
+            } elseif ($result['security_fail']) {
+                $detail[] = 'SECURITY: uploads-php-exec FAIL — ' . $probe['detail'];
+            }
+
+            self::storeAction(
+                'verify',
+                $result['divergent'] === 0 && ! $result['security_fail'],
+                sprintf(
+                    'Verify: %s (ok %d · drift-db %d · drift-file %d · orphan %d · pending_ref %d · conflict %d · missing_binary %d).',
+                    $result['divergent'] === 0 ? 'convergente' : sprintf('%d divergência(s)', $result['divergent']),
+                    (int) $counts['ok'],
+                    (int) $counts['drift-db'],
+                    (int) $counts['drift-file'],
+                    (int) $counts['orphan'],
+                    (int) $counts['pending_ref'],
+                    (int) $counts['conflict'],
+                    (int) $counts['missing_binary']
+                ),
+                $detail
+            );
+        } catch (\Throwable $e) {
+            self::storeAction('verify', false, 'Falha no verify.', [$e->getMessage()]);
+        }
+
+        self::redirectBackAction();
     }
 
     // ------------------------------------------------------------------
     // Export — download do zip de content/
     // ------------------------------------------------------------------
+
 
     public static function handleExport(): void
     {
@@ -193,14 +393,135 @@ final class IoHandlers
     // ------------------------------------------------------------------
 
     /** capability + nonce — recusa ruidosa (wp_die) em violação. */
-    private static function assertAuthorized(): void
+    private static function assertAuthorized(?string $nonce = null): void
     {
         if (! current_user_can('manage_options')) {
             wp_die(esc_html__('Sem permissão para operar o cvsync.', 'hacklabr'), 'cvsync', ['response' => 403]);
         }
-        // Contrato canônico (Z1): action `cvsync_io`, campo default `_wpnonce`
-        // — o form emite wp_nonce_field('cvsync_io').
-        check_admin_referer(self::NONCE);
+        // Contrato canônico: zip usa action `cvsync_io` (campo default
+        // `_wpnonce`); botões de ação usam action `cvsync_run`.
+        check_admin_referer($nonce ?? self::NONCE);
+    }
+
+    /** Mutação de conteúdo em prod: RECUSA de servidor (matriz §7.3). */
+    private static function refuseProd(): void
+    {
+        if (Environment::PROD !== Environment::current()) {
+            return;
+        }
+        wp_die(
+            esc_html('Operação RECUSADA em produção (matriz §7.3) — o conteúdo chega a prod pelo pipeline: PR → review → deploy → wp sync apply.'),
+            'cvsync',
+            ['response' => 403]
+        );
+    }
+
+    /** Toggle lock_imports: grava transient de recusa e redireciona (true = travado). */
+    private static function importsLocked(): bool
+    {
+        $settings = (array) get_option('cvsync_settings', []);
+        if (empty($settings['lock_imports'])) {
+            return false;
+        }
+
+        self::storeAction('apply', false, 'Apply bloqueado.', ['O toggle "Bloquear imports" está ativo nas configurações do cvsync — destrave para aplicar.']);
+        self::redirectBackAction();
+
+        return true; // inalcançável (redirect exits)
+    }
+
+    /**
+     * Resultado dos botões de ação (contrato canônico): transient
+     * `cvsync_action_result`, shape ['action','ok','summary','detail'[]],
+     * TTL 120s — a tela consome + deleta.
+     *
+     * @param list<string> $detail
+     */
+    private static function storeAction(string $action, bool $ok, string $summary, array $detail): void
+    {
+        set_transient('cvsync_action_result', [
+            'action'  => $action,
+            'ok'      => $ok,
+            'summary' => $summary,
+            'detail'  => $detail,
+        ], 120);
+    }
+
+    /** Redirect dos botões de ação com o marker `?cvsync_action=1`. */
+    private static function redirectBackAction(): void
+    {
+        $referer = wp_get_referer() ?: admin_url('tools.php?page=cvsync');
+        wp_safe_redirect(add_query_arg(['cvsync_action' => '1'], $referer));
+        exit;
+    }
+
+    /**
+     * Entidades do export bulk do painel: posts versionados + attachments
+     * referenciados (escopo referenced, §A.5.5) + menus + branding + termos
+     * das taxonomias versionadas (B). Cada item: [EntityRef, isAttachment].
+     *
+     * @param \CVSync\Cli\Container $container
+     * @return list<array{0: \CVSync\Engine\EntityRef, 1: bool}>
+     */
+    private static function collectExportEntities(\CVSync\Cli\Container $container): array
+    {
+        $entities = [];
+
+        foreach ($container->adapters->versionedPostTypes() as $postType) {
+            if ('attachment' === $postType) {
+                if (null !== $container->referenceGraph) {
+                    $attachmentAdapter = $container->adapters->forPostType('attachment');
+                    foreach ($container->referenceGraph->referencedAttachmentIds() as $attachmentId) {
+                        if (null === $attachmentAdapter) {
+                            continue;
+                        }
+                        $entities[] = [\CVSync\Engine\EntityRef::post('attachment', $attachmentAdapter->ensureUuid((int) $attachmentId)), true];
+                    }
+                }
+                continue;
+            }
+            $adapter = $container->adapters->forPostType($postType);
+            if (null === $adapter) {
+                continue;
+            }
+            $ids = get_posts([
+                'post_type'      => $postType,
+                'post_status'    => $adapter->statuses(),
+                'posts_per_page' => -1,
+                'fields'         => 'ids',
+                'no_found_rows'  => true,
+            ]);
+            foreach ($ids as $id) {
+                $entities[] = [\CVSync\Engine\EntityRef::post($postType, $adapter->ensureUuid((int) $id)), false];
+            }
+        }
+
+        foreach (wp_get_nav_menus() as $menu) {
+            $entities[] = [\CVSync\Engine\EntityRef::of('nav_menu', $menu->slug), false];
+        }
+        foreach ([get_stylesheet() . ':custom_logo', 'core:site_icon'] as $key) {
+            $entities[] = [\CVSync\Engine\EntityRef::of('branding', $key), false];
+        }
+
+        // Termos (Apêndice B): via AdapterRegistry quando expõe; senão filtro.
+        $taxonomies = method_exists($container->adapters, 'versionedTaxonomies')
+            ? $container->adapters->versionedTaxonomies()
+            : array_map('strval', array_keys((array) apply_filters('cvsync/taxonomies', [])));
+        foreach ($taxonomies as $taxonomy) {
+            $termAdapter = $container->adapters->forRef(\CVSync\Engine\EntityRef::of('term', $taxonomy . ':x'));
+            $terms = get_terms(['taxonomy' => $taxonomy, 'hide_empty' => false, 'number' => 0]);
+            if (is_wp_error($terms)) {
+                continue;
+            }
+            foreach ($terms as $term) {
+                if (null !== $termAdapter) {
+                    $termAdapter->ensureUuid((int) $term->term_taxonomy_id);
+                }
+                $entities[] = [\CVSync\Engine\EntityRef::of('term', $taxonomy . ':' . $term->slug), false];
+            }
+        }
+
+        return $entities;
     }
 
     /**
