@@ -140,9 +140,13 @@ final class Exporter
             $bytes = $adapter->serializeDocument($doc, $hash);
             $relative = $adapter->relativePath($doc);
 
-            // Idempotência estrita (§2.3.3): byte-idêntico → zero escrita.
+            // Idempotência estrita (§2.3.3): byte-idêntico → zero escrita de
+            // ARQUIVO — mas a linha sai da fila dirty (fix B1 dogfood: caso 1
+            // da tabela §5.2 exige skip + status 'ok'; touchFileMeta deixava
+            // status='dirty_db' eterno em entidade convergida). recordSync
+            // grava os 3 hashes juntos (invariante §5.4) sem tocar o FS.
             if ($this->paths->matchesContents($relative, $bytes)) {
-                $this->state->touchFileMeta($ref, self::hashHex($hash), $this->paths->mtime($relative));
+                $this->state->recordSync($ref, SyncDirection::DbToFile, self::hashHex($hash), null, $this->paths->mtime($relative));
 
                 return new ExportResult(LogResult::SkippedIdempotent, $relative, $hash);
             }
@@ -208,6 +212,16 @@ final class Exporter
         if (!$adapter->exists($ref)) {
             $record = $this->state->get($ref);
             $path = $adapter->locateFile($ref);
+
+            // Fix B2 (dogfood): entidade ausente no banco JÁ convergida
+            // (arquivo removido + tombstone) → idempotente. Antes: log
+            // 'applied/db-deleted' e re-tombstone A CADA export (branding
+            // 'applied' em toda rodada, fila dirty eterna).
+            if ($path === null
+                && ($record === null || $record->status === EntityStatus::Tombstone)
+            ) {
+                return new ExportResult(LogResult::SkippedIdempotent, null, null, 'db-deleted já convergido (tombstone)');
+            }
 
             if ($path !== null) {
                 $this->paths->delete($path);

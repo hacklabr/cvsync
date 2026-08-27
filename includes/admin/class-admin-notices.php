@@ -31,6 +31,7 @@ use CVSync\Environment;
 use CVSync\Storage\AuditLog;
 use CVSync\Storage\ConflictStore;
 use CVSync\Storage\LogResult;
+use CVSync\Storage\SyncDirection;
 use CVSync\Storage\StateStore;
 use CVSync\Triggers;
 
@@ -46,10 +47,14 @@ final class AdminNotices
 
     /**
      * Recorrência de skipped-fs-readonly que liga o notice: ocorrências no
-     * ring buffer recente do audit log (§11.1).
+     * ring buffer recente do audit log (§11.1) DENTRO DA JANELA — entradas
+     * antigas (fix B3 dogfood: 30 dias de ring buffer mantinham o notice
+     * aceso por um mês após resolvido) e ocorrências anteriores ao último
+     * export bem-sucedido (resolvido) não contam.
      */
     private const FS_READONLY_THRESHOLD = 5;
     private const FS_READONLY_SAMPLE    = 200;
+    private const FS_READONLY_WINDOW    = 2 * HOUR_IN_SECONDS;
 
     public function __construct(
         private readonly StateStore $state,
@@ -204,14 +209,33 @@ final class AdminNotices
             return;
         }
 
+        // Fix B3: só ocorrências NA JANELA contam; e um export bem-sucedido
+        // (applied/db_to_file) MAIS RECENTE que a última ocorrência resolve —
+        // notice apaga sozinho quando o problema foi corrigido.
+        $cutoff = (new \DateTimeImmutable('now', wp_timezone()))
+            ->modify('-' . self::FS_READONLY_WINDOW . ' seconds');
         $count = 0;
+        $lastReadonlyAt = null;
+        $lastAppliedAt = null;
         foreach ($recent as $entry) {
+            $at = $entry->createdAt;
             if (LogResult::SkippedFsReadonly === $entry->result) {
-                $count++;
+                if ($at >= $cutoff) {
+                    $count++;
+                }
+                $lastReadonlyAt = $lastReadonlyAt === null ? $at : max($lastReadonlyAt, $at);
+            } elseif (LogResult::Applied === $entry->result
+                && $entry->direction === SyncDirection::DbToFile
+                && ($lastAppliedAt === null || $at > $lastAppliedAt)
+            ) {
+                $lastAppliedAt = $at;
             }
         }
         if ($count < self::FS_READONLY_THRESHOLD) {
             return;
+        }
+        if ($lastReadonlyAt !== null && $lastAppliedAt !== null && $lastAppliedAt > $lastReadonlyAt) {
+            return; // resolvido: export bem-sucedido posterior à última falha
         }
 
         printf(
