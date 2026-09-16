@@ -40,6 +40,7 @@ final class VerifyRunner
             'pending_ref' => 0, 'conflict' => 0, 'missing_binary' => 0,
             'oversized-untracked' => 0, 'drift-external' => 0,
             'orphaned-term' => 0, // Apêndice B.7.2 — informativo, NÃO soma em divergent
+            'cas-hash-mismatch' => 0, // §A.4.3 deep — blob CAS do repo re-hashado divergente
         ];
 
         foreach ($this->allRecords() as $record) {
@@ -89,7 +90,7 @@ final class VerifyRunner
 
         $divergent = $counts['drift-db'] + $counts['drift-file'] + $counts['orphan']
             + $counts['pending_ref'] + $counts['conflict'] + $counts['missing_binary']
-            + $counts['oversized-untracked'];
+            + $counts['oversized-untracked'] + $counts['cas-hash-mismatch'];
 
         return [
             'report' => [
@@ -195,10 +196,42 @@ final class VerifyRunner
                 if (false !== $actual && ! hash_equals(strtolower($record->binHash), $actual)) {
                     return ['drift-external', 'binário reescrito out-of-band (otimizador? §A.10.5) — drift tolerado'];
                 }
+
+                // Repo CAS blob (§A.4.3 deep, defect G): --deep must also
+                // re-hash the blobs in content/media/bin/ — a tampered blob
+                // (the M9 scenario) is a hard integrity failure, not a
+                // tolerated drift. The lint catches it on CI; --deep catches
+                // it on deployed/checkouted trees.
+                $hex = strtolower($record->binHash);
+                $blobAbs = $this->locateCasBlob($hex);
+                if (null === $blobAbs) {
+                    return ['missing_binary', 'blob CAS ausente no repo: media/bin/' . substr($hex, 0, 2) . '/' . $hex . '.*'];
+                }
+                $blobHash = hash_file('sha256', $blobAbs);
+                if (false === $blobHash || ! hash_equals($hex, $blobHash)) {
+                    return ['cas-hash-mismatch', 'blob CAS com hash divergente do state: ' . basename($blobAbs)];
+                }
             }
         }
 
         return ['ok', ''];
+    }
+
+    /**
+     * Absolute path of the repo CAS blob for a bin_hash. The CAS filename is
+     * 'media/bin/<2hex>/<sha256>.<ext>' — the extension is not tracked in the
+     * state, so match the hash stem within its fan-out directory.
+     */
+    private function locateCasBlob(string $hex): ?string
+    {
+        $dir = $this->c->paths->contentDir() . '/media/bin/' . substr($hex, 0, 2);
+        foreach (glob($dir . '/' . $hex . '.*') ?: [] as $candidate) {
+            if (is_file($candidate) && ! is_link($candidate)) {
+                return $candidate;
+            }
+        }
+
+        return null;
     }
 
     /**
