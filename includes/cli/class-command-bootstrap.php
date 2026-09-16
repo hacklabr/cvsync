@@ -24,6 +24,7 @@ namespace CVSync\Cli;
 use CVSync\Engine\Hasher;
 use CVSync\Environment;
 use CVSync\ImportContext;
+use CVSync\Storage\ConflictRecord;
 use CVSync\Storage\EntityStatus;
 use CVSync\Storage\LogResult;
 use CVSync\Storage\SyncDirection;
@@ -166,6 +167,32 @@ final class CommandBootstrap extends CommandBase
             'file_mtime' => $this->c->paths->mtime($relative),
             'status'     => EntityStatus::Conflict,
         ]);
+
+        // Preserve the loser in wp_cvsync_conflicts (§7.4) so the documented
+        // recovery flow works end-to-end: `wp sync conflicts` lists it and
+        // `wp sync resolve <entity> --keep=…` closes it. State-only marking
+        // left bootstrap conflicts invisible to resolve, which reads the
+        // conflicts table (defect F). Bootstrap does NOT apply the winner —
+        // resolution stays manual.
+        $winner = Environment::conflictWinner();
+        $loser  = 'db' === $winner ? 'file' : 'db';
+        $loserPayload = 'file' === $loser ? $bytes : $this->canonicalDump($ref);
+        try {
+            $this->c->conflicts->record(new ConflictRecord(
+                null,
+                $ref,
+                $loser,
+                '' !== $loserPayload ? $loserPayload : '(indisponível)',
+                $winner,
+                $ctx->trigger,
+                $this->actor(),
+                null,
+                new \DateTimeImmutable('now', wp_timezone()),
+                null
+            ));
+        } catch (\Throwable $e) {
+            \WP_CLI::warning(sprintf('conflito em %s sem preservação do perdedor: %s', $ref->toTupleString(), $e->getMessage()));
+        }
         $summary['conflicts']++;
         \WP_CLI::warning(sprintf('conflito em %s (bootstrap não infere; resolva com wp sync resolve)', $ref->toTupleString()));
     }
@@ -261,5 +288,35 @@ final class CommandBootstrap extends CommandBase
     private function hex(string $hash): string
     {
         return str_starts_with($hash, Hasher::PREFIX) ? substr($hash, strlen(Hasher::PREFIX)) : $hash;
+    }
+
+    /** Canonical dump of the db side (conflict loser payload, §7.4). */
+    private function canonicalDump(\CVSync\Engine\EntityRef $ref): string
+    {
+        $adapter = $this->c->adapters->forRef($ref);
+        if (null === $adapter) {
+            return '';
+        }
+        try {
+            $doc = $adapter->readCanonical($ref);
+            if (null === $doc) {
+                return '';
+            }
+
+            return $adapter->serializeDocument($doc, Hasher::hashDocument($doc, $adapter->keyOrder()));
+        } catch (\Throwable) {
+            return '';
+        }
+    }
+
+    /**
+     * Audit actor (mirror of ApplyRunner::actor): no-user WP-CLI contexts
+     * yield a non-string user_login — never let it reach typed fields.
+     */
+    private function actor(): string
+    {
+        $login = wp_get_current_user()->user_login ?? '';
+
+        return is_string($login) && '' !== $login ? $login : 'cli';
     }
 }

@@ -879,11 +879,18 @@ final class ApplyRunner
         }
     }
 
+    /**
+     * Audit actor for logs and conflict records. In no-user contexts (WP-CLI
+     * without --user) user_login is NOT a string (false/null): the previous
+     * strict `'' !== $user->user_login` comparison let `false` through and
+     * crashed the typed return — killing the loser preservation before the
+     * conflict row was ever written (defect E).
+     */
     private function actor(): string
     {
-        $user = wp_get_current_user();
+        $login = wp_get_current_user()->user_login ?? '';
 
-        return '' !== $user->user_login ? $user->user_login : 'cvsync-cli';
+        return is_string($login) && '' !== $login ? $login : 'cli';
     }
 
     private function appendLog(EntityRef $ref, ImportContext $ctx, LogResult $result, ?string $error): void
