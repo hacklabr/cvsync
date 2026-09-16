@@ -68,10 +68,13 @@ final class Hooks
         add_action('updated_post_meta', [$this, 'onMetaChanged'], 10, 3);
         add_action('deleted_post_meta', [$this, 'onMetaChanged'], 10, 3);
 
-        // Família nav_menu (§8.1).
+        // Família nav_menu (§8.1). NOTE: core fires 'wp_create_nav_menu' and
+        // 'wp_update_nav_menu', but menu DELETION has no dedicated action
+        // carrying the slug — 'wp_delete_nav_menu' fires after the term row
+        // is gone (only term_id). Deletion is tracked via the term hooks
+        // below (delete_term receives the deleted WP_Term — defect C).
         add_action('wp_create_nav_menu', [$this, 'onNavMenuChanged'], 10, 1);
         add_action('wp_update_nav_menu', [$this, 'onNavMenuChanged'], 10, 1);
-        add_action('delete_nav_menu', [$this, 'onNavMenuDeleted'], 10, 2);
 
         // Termos: nav_menu (itens) + taxonomias identitárias (§4.2.5).
         add_action('set_object_terms', [$this, 'onSetObjectTerms'], 10, 6);
@@ -192,20 +195,6 @@ final class Hooks
         $this->state->markDirty(EntityRef::of('nav_menu', $menu->slug), EntityStatus::DirtyDb);
     }
 
-    public function onNavMenuDeleted(mixed $term, mixed $ttId = null): void
-    {
-        if ($this->guard->isImporting()) {
-            return;
-        }
-        $slug = $term instanceof \WP_Term ? $term->slug : null;
-        if ($slug === null) {
-            return;
-        }
-
-        // Menu deletado no admin: Exporter remove o arquivo + tombstone (§5.5).
-        $this->state->markDirty(EntityRef::of('nav_menu', $slug), EntityStatus::DirtyDb);
-    }
-
     public function onSetObjectTerms(int $objectId, array $terms, array $ttIds, string $taxonomy, bool $append, array $oldTtIds): void
     {
         if ($this->guard->isImporting()) {
@@ -312,7 +301,26 @@ final class Hooks
      */
     public function onDeleteTerm(int $termId, int $ttId, string $taxonomy, mixed $deletedTerm): void
     {
-        if ($this->guard->isImporting() || !$this->isVersionedTaxonomy($taxonomy)) {
+        if ($this->guard->isImporting()) {
+            return;
+        }
+
+        // nav_menu is versioned as kind='nav_menu' (not as a versioned
+        // taxonomy), so the generic guard below skips it — yet wp_delete_nav_menu()
+        // funnels through wp_delete_term() and this hook receives the deleted
+        // WP_Term (slug intact). Mark dirty so the shutdown export removes the
+        // .menu.yml + records the tombstone (defect C: orphan file, blind verify).
+        if ('nav_menu' === $taxonomy) {
+            $slug = $deletedTerm instanceof \WP_Term ? $deletedTerm->slug : null;
+            if (null !== $slug && '' !== $slug) {
+                // Menu deletado no admin: Exporter remove o arquivo + tombstone (§5.5).
+                $this->state->markDirty(EntityRef::of('nav_menu', $slug), EntityStatus::DirtyDb);
+            }
+
+            return;
+        }
+
+        if (!$this->isVersionedTaxonomy($taxonomy)) {
             return;
         }
 
