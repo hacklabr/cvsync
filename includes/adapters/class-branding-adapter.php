@@ -73,7 +73,13 @@ final class BrandingAdapter implements EntityAdapter
 
     public function fileExtension(): string
     {
-        return '.branding.yml';
+        // Suffix match for discovery filters (str_ends_with). The canonical
+        // file is 'site/branding.yml' (FILE_PATH) — the previous '.branding.yml'
+        // never matched it, leaving branding invisible to every file→db
+        // discovery path (bootstrap, apply plan, rebase, adapterForPath).
+        // Without the leading dot, the canonical path matches and legacy
+        // '<name>.branding.yml' aliases keep matching as a suffix.
+        return 'branding.yml';
     }
 
     public function metaAllowlist(): array

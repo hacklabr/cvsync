@@ -297,10 +297,44 @@ final class ApplyRunner
                 continue;
             }
             $covered[$key] = true;
-            $plan[] = $this->planItem($record->ref, null, null, null, $head, $lastAppliedHead, $regression);
+            [$path, $fileHash, $fileBytes] = $this->uncoveredFileFacts($record->ref);
+            $plan[] = $this->planItem($record->ref, $path, $fileHash, $fileBytes, $head, $lastAppliedHead, $regression);
         }
 
         return $plan;
+    }
+
+    /**
+     * File-side facts for a state row not covered by the extension-driven
+     * discovery above. A row can still HAVE a file the discovery cannot map
+     * 1:1 — branding is ONE file carrying TWO state keys and parseDocument()
+     * only emits the primary key. Resolve the file via locateFile() so the
+     * engine sees the real file side; without this the sibling key is planned
+     * as a phantom case-7 "new entity from admin" export with no file
+     * (plan noise: branding "(sem arquivo)" while verify is green).
+     *
+     * @return array{0: string|null, 1: string|null, 2: string|null} [path, fileHash, fileBytes]
+     */
+    private function uncoveredFileFacts(EntityRef $ref): array
+    {
+        $adapter = $this->c->adapters->forRef($ref);
+        $path    = $adapter?->locateFile($ref);
+        if (null === $adapter || null === $path) {
+            return [null, null, null];
+        }
+
+        $bytes = $this->c->paths->read($path);
+        if (null === $bytes) {
+            return [null, null, null];
+        }
+
+        try {
+            $hash = Hasher::hashDocument($adapter->parseDocument($bytes), $adapter->keyOrder());
+        } catch (\Throwable) {
+            return [$path, null, $bytes]; // unparseable: engine fails closed as conflict
+        }
+
+        return [$path, $hash, $bytes];
     }
 
     /**
