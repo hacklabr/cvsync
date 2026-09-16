@@ -68,6 +68,7 @@ final class AttachmentAdapter extends AbstractPostAdapter
         private readonly Materializer $materializer,
         private readonly AuditLog $log,
         private readonly ?\CVSync\Storage\Locks $locks = null,
+        private readonly bool $dryRun = false,
     ) {
         parent::__construct($state, $resolver, $paths);
     }
@@ -194,22 +195,29 @@ final class AttachmentAdapter extends AbstractPostAdapter
         if (!$post instanceof \WP_Post) {
             // Deleção no banco (§A.7): export remove SOMENTE o sidecar; o blob
             // fica para o GC. (O core apaga os bytes no fluxo do admin — não o plugin.)
+            // Dry-run (--check): report only — no file removal, no tombstone.
             $record = $this->state->get($ref);
             $path = $record !== null ? $this->locateFile($ref) : null;
-            if ($path !== null) {
-                $this->paths->delete($path);
-            }
-            if ($record !== null) {
-                $this->state->tombstone($ref);
+            if (!$this->dryRun) {
+                if ($path !== null) {
+                    $this->paths->delete($path);
+                }
+                if ($record !== null) {
+                    $this->state->tombstone($ref);
+                }
             }
 
             return LogResult::Applied;
         }
 
         try {
-            $sidecar = $this->buildSidecar($ref, true); // export efetivo: persiste o blob no CAS
+            // Dry-run never persists to the CAS: buildSidecar($persistBlob=false)
+            // streams/hashOnly without writing (r8, 🟡3).
+            $sidecar = $this->buildSidecar($ref, !$this->dryRun);
         } catch (OversizedException $e) {
-            $this->appendLog($ref, $trigger, LogResult::SkippedOversized, $e->getMessage());
+            if (!$this->dryRun) {
+                $this->appendLog($ref, $trigger, LogResult::SkippedOversized, $e->getMessage());
+            }
 
             return LogResult::SkippedOversized; // §A.5.4 — escopo, não erro
         }
@@ -225,8 +233,11 @@ final class AttachmentAdapter extends AbstractPostAdapter
 
         // Idempotência estrita (r8, 🔴3): byte-idêntico → skip SEM escrita e
         // sem recordSync redundante (espelha o Exporter genérico; --check verde).
+        // Dry-run: side-effect free — skip the touchFileMeta state write too.
         if ($this->paths->matchesContents($relative, $yaml)) {
-            $this->state->touchFileMeta($ref, $this->hashHex($hash), $this->paths->mtime($relative));
+            if (!$this->dryRun) {
+                $this->state->touchFileMeta($ref, $this->hashHex($hash), $this->paths->mtime($relative));
+            }
 
             return LogResult::SkippedIdempotent;
         }
@@ -234,9 +245,18 @@ final class AttachmentAdapter extends AbstractPostAdapter
         // Degradação graciosa em FS read-only (§10.7 — nunca fatal; r8, 🔵5).
         $targetDir = dirname($this->paths->resolveWritable($relative));
         if (!is_writable(is_dir($targetDir) ? $targetDir : dirname($targetDir))) {
-            $this->appendLog($ref, $trigger, LogResult::SkippedFsReadonly, 'FS read-only');
+            if (!$this->dryRun) {
+                $this->appendLog($ref, $trigger, LogResult::SkippedFsReadonly, 'FS read-only');
+            }
 
             return LogResult::SkippedFsReadonly;
+        }
+
+        // Dry-run (`export --check`, §12.3): report the pending write and stop —
+        // no sidecar write, no state mutation, no audit log. (The real export
+        // may also persist a missing CAS blob — the check reports the sidecar.)
+        if ($this->dryRun) {
+            return LogResult::Applied;
         }
 
         $this->paths->writeAtomic($relative, $yaml);

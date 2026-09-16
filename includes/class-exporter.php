@@ -17,6 +17,10 @@
  *  6. Entidade viva no state mas ausente/trash no banco → deleção semântica
  *     (§5.5): remove o arquivo e grava tombstone (admin é autoridade em dev).
  *
+ * Dry-run ($dryRun, usado por `export --check` §12.3): computa e compara tudo,
+ * mas NUNCA escreve arquivo, NUNCA remove path antigo, NUNCA grava state nem
+ * audit log — Applied significa "escrita pendente", o comando falha o check.
+ *
  * Rename de slug (§4.2.4): mesmo UUID, path novo → o arquivo antigo é removido
  * após a escrita do novo (git detecta o rename).
  *
@@ -48,6 +52,7 @@ final class Exporter
         private readonly Locks $locks,
         private readonly PathGuard $paths,
         private readonly AuditLog $log,
+        private readonly bool $dryRun = false,
     ) {
     }
 
@@ -145,8 +150,11 @@ final class Exporter
             // da tabela §5.2 exige skip + status 'ok'; touchFileMeta deixava
             // status='dirty_db' eterno em entidade convergida). recordSync
             // grava os 3 hashes juntos (invariante §5.4) sem tocar o FS.
+            // Dry-run (--check): side-effect free — skip the state write too.
             if ($this->paths->matchesContents($relative, $bytes)) {
-                $this->state->recordSync($ref, SyncDirection::DbToFile, self::hashHex($hash), null, $this->paths->mtime($relative));
+                if (!$this->dryRun) {
+                    $this->state->recordSync($ref, SyncDirection::DbToFile, self::hashHex($hash), null, $this->paths->mtime($relative));
+                }
 
                 return new ExportResult(LogResult::SkippedIdempotent, $relative, $hash);
             }
@@ -174,6 +182,14 @@ final class Exporter
                 return new ExportResult(LogResult::SkippedFsReadonly, $relative, $hash, 'FS read-only');
             }
 
+            // Dry-run (`export --check`, §12.3): report the pending write and
+            // stop — no file write, no old-path removal, no state/audit
+            // mutation. The command tallies Applied as a pending write and
+            // fails the check; nothing converges implicitly.
+            if ($this->dryRun) {
+                return new ExportResult(LogResult::Applied, $relative, $hash);
+            }
+
             $this->paths->writeAtomic($relative, $bytes);
 
             // Rename de slug: remove o arquivo no path antigo (mesmo UUID).
@@ -193,7 +209,9 @@ final class Exporter
 
             return new ExportResult(LogResult::Applied, $relative, $hash);
         } catch (\Throwable $e) {
-            $this->appendLog($ref, $trigger, null, null, null, LogResult::Error, $e->getMessage());
+            if (!$this->dryRun) {
+                $this->appendLog($ref, $trigger, null, null, null, LogResult::Error, $e->getMessage());
+            }
 
             return new ExportResult(LogResult::Error, null, null, $e->getMessage());
         }
@@ -223,13 +241,17 @@ final class Exporter
                 return new ExportResult(LogResult::SkippedIdempotent, null, null, 'db-deleted já convergido (tombstone)');
             }
 
-            if ($path !== null) {
-                $this->paths->delete($path);
+            // Dry-run: the file removal + tombstone are part of what --check
+            // must only REPORT (a would-be deletion is a pending write).
+            if (!$this->dryRun) {
+                if ($path !== null) {
+                    $this->paths->delete($path);
+                }
+                if ($record !== null) {
+                    $this->state->tombstone($ref);
+                }
+                $this->appendLog($ref, $trigger, $path, $record?->lastSyncHash, null, LogResult::Applied, 'db-deleted');
             }
-            if ($record !== null) {
-                $this->state->tombstone($ref);
-            }
-            $this->appendLog($ref, $trigger, $path, $record?->lastSyncHash, null, LogResult::Applied, 'db-deleted');
 
             return new ExportResult(LogResult::Applied, $path, null);
         }
