@@ -48,12 +48,13 @@ final readonly class ConflictRecord
      */
     public static function fromRow(object|array $row): self
     {
-        $row  = (array) $row;
-        $kind = (string) ($row['entity_kind'] ?? '');
+        $row      = (array) $row;
+        $kind     = (string) ($row['entity_kind'] ?? '');
+        $postType = (string) ($row['post_type'] ?? '');
 
         return new self(
             id: (int) $row['id'],
-            ref: EntityRef::of($kind, (string) ($row['entity_key'] ?? '')),
+            ref: 'post' === $kind ? EntityRef::post($postType, (string) ($row['entity_key'] ?? '')) : EntityRef::of($kind, (string) ($row['entity_key'] ?? '')),
             loserSide: (string) ($row['loser_side'] ?? ''),
             loserPayload: (string) ($row['loser_payload'] ?? ''),
             winner: (string) ($row['winner'] ?? ''),
@@ -78,6 +79,7 @@ final readonly class ConflictRecord
     {
         return [
             'entity_kind'   => $this->ref->kind,
+            'post_type'     => $this->ref->postType,
             'entity_key'    => $this->ref->key,
             'loser_side'    => $this->loserSide,
             'loser_payload' => $this->loserPayload,

@@ -8,8 +8,8 @@
  * tree-hash por tipo (§11.1), drift-external (otimizadores — §A.10.5, exit 0)
  * e security: uploads-php-exec (sonda do P4 — §A.9.2).
  *
- * Flags: --format=json, --deep (re-hash de blobs §A.4.3 — única varredura de
- * disco em massa, sob demanda explícita).
+ * Flags: --format=json, --deep (re-hash de binários de uploads E blobs CAS
+ * do repo §A.4.3 — única varredura de disco em massa, sob demanda explícita).
  *
  * A computação vive em VerifyRunner (compartilhada com o botão "Verificar
  * agora" do painel — mesmo caminho, sem WP_CLI); esta classe é o shell CLI

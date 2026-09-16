@@ -73,7 +73,13 @@ final class BrandingAdapter implements EntityAdapter
 
     public function fileExtension(): string
     {
-        return '.branding.yml';
+        // Suffix match for discovery filters (str_ends_with). The canonical
+        // file is 'site/branding.yml' (FILE_PATH) — the previous '.branding.yml'
+        // never matched it, leaving branding invisible to every file→db
+        // discovery path (bootstrap, apply plan, rebase, adapterForPath).
+        // Without the leading dot, the canonical path matches and legacy
+        // '<name>.branding.yml' aliases keep matching as a suffix.
+        return 'branding.yml';
     }
 
     public function metaAllowlist(): array
@@ -226,14 +232,18 @@ final class BrandingAdapter implements EntityAdapter
         }
 
         // State das DUAS mini-entidades presentes no documento (mesmo hash).
+        // The state table stores the HEX (CHAR(64)) — strip the 'sha256:'
+        // prefix (hashDocument returns the prefixed form; a prefixed value
+        // overflows the column under strict SQL mode and fails the import).
         $hash = Hasher::hashDocument($doc);
+        $hex  = str_starts_with($hash, Hasher::PREFIX) ? substr($hash, strlen(Hasher::PREFIX)) : $hash;
         $stylesheet = (string) $data['stylesheet'];
         foreach (self::FIELDS as $field => $keySuffix) {
             if (!array_key_exists($field, $data)) {
                 continue;
             }
             $key = $field === 'custom_logo' ? $stylesheet . ':' . $keySuffix : $keySuffix;
-            $this->state->recordSync(EntityRef::of('branding', $key), SyncDirection::FileToDb, $hash);
+            $this->state->recordSync(EntityRef::of('branding', $key), SyncDirection::FileToDb, $hex);
         }
 
         return new ApplyResult(null, [], $pendencies, []);

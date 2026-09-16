@@ -5,8 +5,9 @@
  * Flags: --post-type=<type>, --scope=referenced|all (attachments; default
  * referenced — §A.5.5), --batch=50 (chunking retomável por idempotência),
  * --out=<dir> (destino alternativo — ex.: captura de mídia de prod em dir
- * temporário, com credenciais do operador), --check (CI: falha se gerar diff,
- * §12.3 idempotência), --format=json.
+ * temporário, com credenciais do operador), --check (CI: DRY-RUN — reporta
+ * escritas pendentes, NUNCA executa; falha se houver, §12.3 idempotência),
+ * --format=json.
  *
  * Export CLI em prod é LIVRE (read-only no banco; §7.3) — é a porta de
  * entrada para capturar conteúdo do cliente de volta ao repo.
@@ -64,14 +65,26 @@ final class CommandExport extends CommandBase
         if (null !== $out) {
             // Destino alternativo (§A.5.5 — captura prod → dir temporário).
             $outPaths = new PathGuard($out);
-            $exporter = new Exporter($this->c->adapters, $this->c->state, $this->c->locks, $outPaths, $this->c->log);
+        }
+        if (null !== $outPaths || $check) {
+            // --check runs over a DRY-RUN exporter (defect B): the check must
+            // REPORT pending writes, never execute them. Same construction as
+            // the container's, with dryRun=true.
+            $exporter = new Exporter(
+                $this->c->adapters,
+                $this->c->state,
+                $this->c->locks,
+                $outPaths ?? $this->c->paths,
+                $this->c->log,
+                $check
+            );
         }
 
         $summary = ['exported' => 0, 'skipped' => 0, 'oversized' => 0, 'errors' => 0, 'written' => 0];
 
         foreach ($this->targetPostTypes($postType) as $type) {
             if ('attachment' === $type) {
-                $this->exportAttachments($scope, $batch, $summary, $json, $outPaths);
+                $this->exportAttachments($scope, $batch, $summary, $json, $outPaths, $check);
                 continue;
             }
             $this->exportPostType($type, $batch, $exporter, $summary, $json);
@@ -86,7 +99,7 @@ final class CommandExport extends CommandBase
         $taxonomiesToExport = null !== $taxonomy ? [$taxonomy]
             : (null === $postType ? $versionedTaxonomies : []);
         foreach ($taxonomiesToExport as $taxonomyName) {
-            $this->exportTaxonomyTerms($taxonomyName, $batch, $summary, $json);
+            $this->exportTaxonomyTerms($taxonomyName, $batch, $summary, $json, $exporter);
         }
 
         if ($json) {
@@ -104,9 +117,14 @@ final class CommandExport extends CommandBase
         if ($summary['errors'] > 0) {
             \WP_CLI::halt(1);
         }
-        // --check (§12.3): qualquer escrita = diff = falha de idempotência.
+        // --check (§12.3): DRY-RUN — any pending write = diff = idempotency
+        // failure. Nothing was written (defect B: check used to execute the
+        // writes it should only report, "self-healing" real divergences).
         if ($check && $summary['written'] > 0) {
-            \WP_CLI::error(sprintf('--check: o export gerou %d escrita(s) — o repo está fora de sync com o banco.', $summary['written']));
+            \WP_CLI::error(sprintf(
+                '--check: o export geraria %d escrita(s) — o repo está fora de sync com o banco (dry-run: nada foi escrito).',
+                $summary['written']
+            ));
         }
         \WP_CLI::halt(0);
     }
@@ -134,13 +152,13 @@ final class CommandExport extends CommandBase
      *
      * @param array<string, int> $summary
      */
-    private function exportTaxonomyTerms(string $taxonomy, int $batch, array &$summary, bool $json): void
+    private function exportTaxonomyTerms(string $taxonomy, int $batch, array &$summary, bool $json, ?Exporter $exporter = null): void
     {
         $entities = $this->enumerateVersionedTerms($taxonomy);
 
         foreach (array_chunk($entities, $batch) as $chunk) {
             foreach ($chunk as [$ref, $adapter]) {
-                $outcome = $this->termOutcome($this->exportTermOnce($ref, $adapter));
+                $outcome = $this->termOutcome($this->exportTermOnce($ref, $adapter, $exporter));
                 $this->tally($summary, $outcome, $json, $ref);
             }
         }
@@ -178,8 +196,10 @@ final class CommandExport extends CommandBase
      * Com --out (🟡10 do r7): o adapter é instanciado com o PathGuard/MediaStore
      * do diretório de destino — sidecar e blob CAS vão para <out>/media/, sem
      * tocar o content dir real (runbook de captura prod → dir temporário).
+     * Com --check: o twin roda em DRY-RUN (defect B) — nenhuma escrita de
+     * sidecar/state/log, o CAS jamais persistido.
      */
-    private function exportAttachments(string $scope, int $batch, array &$summary, bool $json, ?PathGuard $outPaths = null): void
+    private function exportAttachments(string $scope, int $batch, array &$summary, bool $json, ?PathGuard $outPaths = null, bool $dryRun = false): void
     {
         $adapter = $this->c->adapters->forPostType('attachment');
         if (! $adapter instanceof AttachmentAdapter || null === $this->c->referenceGraph) {
@@ -188,15 +208,16 @@ final class CommandExport extends CommandBase
             return;
         }
 
-        if (null !== $outPaths) {
+        if (null !== $outPaths || $dryRun) {
             $adapter = new AttachmentAdapter(
                 $this->c->state,
                 $this->c->resolver,
-                $outPaths,
-                new \CVSync\Media\MediaStore($outPaths),
+                $outPaths ?? $this->c->paths,
+                null !== $outPaths ? new \CVSync\Media\MediaStore($outPaths) : $this->c->mediaStore,
                 $this->c->materializer ?? throw new \LogicException('Materializer indisponível com P4 presente.'),
                 $this->c->log,
-                $this->c->locks // R3 da r9: lock por entidade fail-open (§5.8)
+                $this->c->locks, // R3 da r9: lock por entidade fail-open (§5.8)
+                $dryRun
             );
         }
 

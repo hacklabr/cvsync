@@ -219,17 +219,18 @@ abstract class CommandBase
      * existe nesta entidade), com lock fail-open, idempotência e FS read-only
      * nativos. O probe `exportTerm()` permanece como ponto de extensão caso
      * um fluxo dedicado surgja (padrão exportAttachment) — hoje é no-op.
+     * $exporter permite injetar o twin dry-run do `export --check` (defect B).
      *
      * @return \CVSync\Storage\LogResult|\CVSync\ExportResult|null LogResult do
      *         fluxo dedicado (?LogResult), ExportResult do genérico, ou null.
      */
-    protected function exportTermOnce(EntityRef $ref, ?\CVSync\Adapters\EntityAdapter $adapter): \CVSync\Storage\LogResult|\CVSync\ExportResult|null
+    protected function exportTermOnce(EntityRef $ref, ?\CVSync\Adapters\EntityAdapter $adapter, ?\CVSync\Exporter $exporter = null): \CVSync\Storage\LogResult|\CVSync\ExportResult|null
     {
         if (null !== $adapter && method_exists($adapter, 'exportTerm')) {
             return $adapter->exportTerm($ref, 'cli');
         }
 
-        return $this->c->exporter->export($ref, 'cli');
+        return ($exporter ?? $this->c->exporter)->export($ref, 'cli');
     }
 
     /** Normaliza exportTermOnce() para o LogResult (ou null = lock fail-open). */

@@ -39,7 +39,7 @@ final class Schema
      * atual (deltas consolidados na DDL); a numeração serve ao gate §5.9 e a
      * upgrades futuros.
      */
-    public const SCHEMA_VERSION = 3;
+    public const SCHEMA_VERSION = 4;
 
     /** Option com a versão instalada (autoload=no). */
     public const OPTION_NAME = 'cvsync_schema_version';
@@ -104,10 +104,13 @@ final class Schema
   KEY idx_binhash (bin_hash)
 ) ENGINE=InnoDB {$charsetCollate};",
 
-            // spec §7.4 detalhada + emenda A3 (trigger_src).
+            // spec §7.4 detalhada + emenda A3 (trigger_src) + v4 (post_type —
+            // a tupla de identidade uq_entity precisa sobreviver ao
+            // round-trip: kind='post' sem post_type não reconstrói EntityRef).
             'conflicts' => "CREATE TABLE {$conflicts} (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   entity_kind VARCHAR(32) NOT NULL,
+  post_type VARCHAR(20) NOT NULL DEFAULT '',
   entity_key VARCHAR(255) NOT NULL,
   loser_side VARCHAR(8) NOT NULL,
   loser_payload MEDIUMTEXT NOT NULL,
@@ -118,7 +121,7 @@ final class Schema
   created_at DATETIME NOT NULL,
   resolved_at DATETIME NULL,
   PRIMARY KEY  (id),
-  KEY idx_entity (entity_kind, entity_key, resolved_at)
+  KEY idx_entity (entity_kind, post_type, entity_key, resolved_at)
 ) ENGINE=InnoDB {$charsetCollate};",
 
             // spec §9.3 detalhada + §A.10.5 (bytes) + emenda A3 (trigger_src).
@@ -171,6 +174,10 @@ final class Schema
         }
 
         if (! self::migrateEntityKeyWidth()) {
+            return false;
+        }
+
+        if (! self::migrateConflictsPostType()) {
             return false;
         }
 
@@ -238,6 +245,75 @@ final class Schema
                 error_log(sprintf('[cvsync] B.5 migration failed on %s: %s', $table, $wpdb->last_error));
                 return false;
             }
+        }
+
+        return true;
+    }
+
+    /**
+     * (3→4): wp_cvsync_conflicts ganha post_type. A tabela gravava apenas
+     * (entity_kind, entity_key) — kind='post' perdia o post_type no
+     * round-trip e ConflictRecord::fromRow não reconstruía o EntityRef
+     * (quebra no primeiro `wp sync conflicts` com conflito de post).
+     * Idêntico ao passo B.5: verifica INFORMATION_SCHEMA e emite o ALTER
+     * apenas se a coluna falta — idempotente por construção (dbDelta do
+     * install() já cobre instalações frescas).
+     *
+     * ROLLBACK (runbook de downgrade 4→3):
+     *   ALTER TABLE {$wpdb->prefix}cvsync_conflicts DROP COLUMN post_type;
+     *   bump manual da option cvsync_schema_version para 3.
+     *
+     * @return bool false em erro de DDL (logado; o gate §5.9 continua recusando).
+     */
+    private static function migrateConflictsPostType(): bool
+    {
+        global $wpdb;
+
+        $table = self::table('conflicts');
+
+        $columnType = $wpdb->get_var(
+            $wpdb->prepare(
+                "SELECT COLUMN_TYPE FROM INFORMATION_SCHEMA.COLUMNS
+                 WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s AND COLUMN_NAME = 'post_type'",
+                $table
+            )
+        );
+
+        // Tabela inexistente (instalação fresca) ou já migrada → só o backfill.
+        if (null === $columnType) {
+            $wpdb->query(
+                $wpdb->prepare("ALTER TABLE %i ADD COLUMN post_type VARCHAR(20) NOT NULL DEFAULT '' AFTER entity_kind", $table)
+            );
+
+            if ('' !== $wpdb->last_error) {
+                // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+                error_log(sprintf('[cvsync] v4 migration (conflicts.post_type) failed on %s: %s', $table, $wpdb->last_error));
+
+                return false;
+            }
+        }
+
+        // Backfill idempotente: deriva o post_type de linhas legadas kind='post'
+        // a partir da state table (mesma tupla de identidade). Linha sem state
+        // correspondente permanece '' — ilegível pelo fromRow (fail-closed);
+        // remover manualmente (a entidade não deixou identidade recuperável).
+        $wpdb->query(
+            $wpdb->prepare(
+                'UPDATE %i c JOIN %i s ON s.entity_kind = c.entity_kind AND s.entity_key = c.entity_key
+                 SET c.post_type = s.post_type
+                 WHERE c.entity_kind = %s AND c.post_type = %s',
+                $table,
+                self::table('state'),
+                'post',
+                ''
+            )
+        );
+
+        if ('' !== $wpdb->last_error) {
+            // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+            error_log(sprintf('[cvsync] v4 backfill (conflicts.post_type) failed: %s', $wpdb->last_error));
+
+            return false;
         }
 
         return true;
