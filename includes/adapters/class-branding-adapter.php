@@ -232,14 +232,18 @@ final class BrandingAdapter implements EntityAdapter
         }
 
         // State das DUAS mini-entidades presentes no documento (mesmo hash).
+        // The state table stores the HEX (CHAR(64)) — strip the 'sha256:'
+        // prefix (hashDocument returns the prefixed form; a prefixed value
+        // overflows the column under strict SQL mode and fails the import).
         $hash = Hasher::hashDocument($doc);
+        $hex  = str_starts_with($hash, Hasher::PREFIX) ? substr($hash, strlen(Hasher::PREFIX)) : $hash;
         $stylesheet = (string) $data['stylesheet'];
         foreach (self::FIELDS as $field => $keySuffix) {
             if (!array_key_exists($field, $data)) {
                 continue;
             }
             $key = $field === 'custom_logo' ? $stylesheet . ':' . $keySuffix : $keySuffix;
-            $this->state->recordSync(EntityRef::of('branding', $key), SyncDirection::FileToDb, $hash);
+            $this->state->recordSync(EntityRef::of('branding', $key), SyncDirection::FileToDb, $hex);
         }
 
         return new ApplyResult(null, [], $pendencies, []);

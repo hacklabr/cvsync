@@ -148,6 +148,16 @@ final class CommandBootstrap extends CommandBase
                 LogResult::PendingRef => $summary['imported']++,
                 default               => $summary['errors']++,
             };
+            if (! in_array($result->outcome, [LogResult::Applied, LogResult::PendingRef], true)) {
+                // Never a silent skip: the file was discovered but rejected —
+                // name it (defect A's original symptom was a silent no-op).
+                \WP_CLI::warning(sprintf(
+                    '%s rejeitado no import (%s): %s',
+                    $relative,
+                    $result->outcome->value,
+                    $result->error ?? '(sem detalhe)'
+                ));
+            }
 
             return;
         }
