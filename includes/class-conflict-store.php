@@ -64,7 +64,8 @@ final class ConflictStore
     }
 
     /**
-     * Conflitos pendentes (wp sync conflicts). Via idx_entity.
+     * Conflitos pendentes (wp sync conflicts). Via idx_entity (tupla completa
+     * uq_entity — post_type integra o filtro desde o schema v4).
      *
      * @return list<ConflictRecord>
      */
@@ -73,9 +74,10 @@ final class ConflictStore
         if (null !== $ref) {
             $rows = $this->db->get_results(
                 $this->db->prepare(
-                    'SELECT * FROM %i WHERE entity_kind = %s AND entity_key = %s AND resolved_at IS NULL ORDER BY id DESC LIMIT %d',
+                    'SELECT * FROM %i WHERE entity_kind = %s AND post_type = %s AND entity_key = %s AND resolved_at IS NULL ORDER BY id DESC LIMIT %d',
                     $this->table(),
                     $ref->kind,
+                    $ref->postType,
                     $ref->key,
                     $limit
                 ),
