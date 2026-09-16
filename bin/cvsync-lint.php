@@ -463,6 +463,52 @@ foreach ($textFiles as [$rel, $abs]) {
         continue;
     }
 
+    // Branding (§A.6): the single canonical file — schema-checked.
+    // Placeholder references inside it feed the referential gate (collected
+    // above with every text file).
+    if ($rel === 'site/branding.yml') {
+        try {
+            $doc = $parseYaml($bytes);
+        } catch (\Throwable $e) {
+            $report->error($rel, 'frontmatter', $e->getMessage());
+            continue;
+        }
+        if (!isset($doc['stylesheet']) || !is_string($doc['stylesheet'])
+            || preg_match('/^[a-z0-9][a-z0-9_\-]*$/', $doc['stylesheet']) !== 1
+        ) {
+            $report->error($rel, 'schema', "'stylesheet' missing or violates ^[a-z0-9][a-z0-9_\\-]*\$ (§A.6).");
+        }
+        foreach (['custom_logo', 'site_icon'] as $field) {
+            if (!array_key_exists($field, $doc)) {
+                continue;
+            }
+            $value = $doc[$field];
+            if ($value !== null
+                && (!is_string($value) || preg_match('/^\{\{attachment:[^}\s]+\}\}$/', $value) !== 1)
+            ) {
+                $report->error($rel, 'schema', "'{$field}' must be {{attachment:slug}} or null — IDs never cross environments (§6/§A.6).");
+            }
+        }
+        foreach (array_keys($doc) as $key) {
+            if (!in_array($key, ['stylesheet', 'custom_logo', 'site_icon', 'hash'], true)) {
+                $report->error($rel, 'schema', "unknown key '{$key}' (allowed: stylesheet, custom_logo, site_icon, hash — §A.6).");
+            }
+        }
+        if (isset($doc['hash']) && preg_match('/^sha256:[0-9a-f]{64}$/', (string) $doc['hash']) !== 1) {
+            $report->error($rel, 'schema', "'hash' must be sha256:<64 hex>.");
+        }
+        continue;
+    }
+
+    // .gitkeep: explicitly allowed empty directory placeholder — anything
+    // else under content/ named .gitkeep must actually be empty.
+    if (basename($rel) === '.gitkeep') {
+        if ($bytes !== '') {
+            $report->error($rel, 'gitkeep', '.gitkeep must be an empty placeholder file.');
+        }
+        continue;
+    }
+
     if (str_ends_with($rel, '.html')) {
         try {
             [$fm, $body] = $splitDocument($bytes);
